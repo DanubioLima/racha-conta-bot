@@ -21,11 +21,8 @@ export async function createLedgerSource(): Promise<LedgerSource> {
     return mockLedgerSource;
   }
 
-  // O cumbuca source é criado na Task 6. Até lá, só fallback pra mock.
-  // Este branch só executa quando há tokens persistidos — o que só acontece
-  // após Task 8 (cumbuca:link). Portanto está logicamente inacessível enquanto
-  // a Task 6 não estiver concluída.
-  throw new Error(
-    'cumbuca ledger source not yet wired — finish Task 6 to enable',
-  );
+  // Dynamic import: mantém o SDK MCP fora do bundle quando o user está em
+  // LEDGER_SOURCE=mock — evita carregar @modelcontextprotocol/sdk no boot.
+  const { cumbucaLedgerSource } = await import('./cumbuca.source.js');
+  return cumbucaLedgerSource;
 }
