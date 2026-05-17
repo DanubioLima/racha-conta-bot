@@ -204,8 +204,29 @@ async function callMcpTool<TResult>(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<TResult> {
-  const tokens = await getCurrentTokens();
-  const { client, close } = await openMcpClient(tokens);
+  // Qualquer erro no caminho de tokens → connect → callTool → parse marca o
+  // cliente como desconectado. O flag `connected` é a única fonte de verdade
+  // pra um futuro consumidor (health endpoint / alerta WhatsApp), então tem
+  // que refletir o estado real, não só a falha de refresh.
+  let tokens: CumbucaTokens;
+  try {
+    tokens = await getCurrentTokens();
+  } catch (error) {
+    markDisconnected(`token unavailable: ${(error as Error).message}`);
+    throw error;
+  }
+
+  let client: Client;
+  let close: () => Promise<void>;
+  try {
+    const opened = await openMcpClient(tokens);
+    client = opened.client;
+    close = opened.close;
+  } catch (error) {
+    markDisconnected(`mcp connect failed: ${(error as Error).message}`);
+    throw error;
+  }
+
   try {
     const result = await client.callTool({ name: toolName, arguments: args });
     markConnected();
@@ -220,8 +241,17 @@ async function callMcpTool<TResult>(
       throw new Error(`Unexpected MCP response shape for ${toolName}: ${JSON.stringify(result)}`);
     }
     return JSON.parse(textBlock.text) as TResult;
+  } catch (error) {
+    markDisconnected(`tool ${toolName} failed: ${(error as Error).message}`);
+    throw error;
   } finally {
-    await close();
+    // Swallow close errors: se a tool call já falhou, o erro original é mais
+    // útil que o cleanup. Só logamos pra trace.
+    try {
+      await close();
+    } catch (closeError) {
+      console.warn('[cumbuca] mcp close failed', closeError);
+    }
   }
 }
 

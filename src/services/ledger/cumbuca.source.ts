@@ -4,6 +4,9 @@ import { isReceivedPix, toIncomingTransaction } from '../cumbuca/cumbuca.mapper.
 import type { LedgerSource } from './ledger.source.js';
 
 function toYYYYMMDD(isoOrDate: string | Date): string {
+  // Usa data UTC, não a local. Pode "perder" o início do dia local quando
+  // chamado perto da meia-noite, mas o scanner aplica MIN_LOOKBACK_MS (1h)
+  // sobre o `sinceISO`, então a janela fica garantida com folga.
   const date = typeof isoOrDate === 'string' ? new Date(isoOrDate) : isoOrDate;
   return date.toISOString().slice(0, 10);
 }
