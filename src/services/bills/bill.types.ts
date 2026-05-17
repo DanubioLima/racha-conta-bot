@@ -39,5 +39,4 @@ export interface IncomingTransaction {
   amount: number;
   payer_name: string;
   occurred_at: string;
-  consumed?: boolean;
 }
