@@ -108,7 +108,14 @@ export async function createBillFromExtraction(
       due: p.amount_due,
     })),
   });
-  await sendBillCreatedMessages(bill);
+  // Falha de envio de WhatsApp não pode bloquear o agendamento do scan. A
+  // bill já está persistida; o usuário pode não receber o PIX nesse momento,
+  // mas o scanner ainda vai reconciliar pagamentos quando chegarem.
+  try {
+    await sendBillCreatedMessages(bill);
+  } catch (sendError) {
+    console.error("[bill] sendBillCreatedMessages failed", sendError);
+  }
   notifyNewBillCreated();
   return bill;
 }
