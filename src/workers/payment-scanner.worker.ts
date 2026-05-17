@@ -17,6 +17,14 @@ const MIN_LOOKBACK_MS = ONE_HOUR_MS;
 let scanTimer: NodeJS.Timeout | null = null;
 let ledgerSource: LedgerSource | null = null;
 
+// Re-entrancy guard. `scanInFlight` impede que dois ciclos de scan rodem
+// concorrentemente (race no `scanTimer` + risco de duas refresh de token
+// simultâneas marchando uma sobre a outra). `rerunRequested` significa que
+// alguém pediu um scan imediato enquanto um já estava acontecendo; a próxima
+// execução roda imediatamente sem cooldown.
+let scanInFlight = false;
+let rerunRequested = false;
+
 async function getSource(): Promise<LedgerSource> {
   if (!ledgerSource) ledgerSource = await createLedgerSource();
   return ledgerSource;
@@ -104,18 +112,37 @@ export async function scanForBillPayments(): Promise<void> {
 
   for (const transaction of credits) {
     if (await processedTransactionsRepository.wasAlreadyProcessed(transaction.id)) continue;
-    await tryReconcile(transaction);
-    await processedTransactionsRepository.markAsProcessed(transaction.id);
+    const matched = await tryReconcile(transaction);
+    // Só marca como processada quando bate com uma bill. Transações órfãs
+    // (PIX recebido sem bill correspondente) ficam disponíveis pra retentativa
+    // — se uma bill nova for criada cobrindo essa tx, o próximo scan reconcilia.
+    if (matched) {
+      await processedTransactionsRepository.markAsProcessed(transaction.id);
+    }
   }
 }
 
 async function runScanAndReschedule(): Promise<void> {
+  if (scanInFlight) {
+    // Já tem scan rodando — sinaliza pra ele rodar mais uma vez assim que
+    // terminar, em vez de empilhar concorrência. Cobre o caso de várias bills
+    // criadas em rajada.
+    rerunRequested = true;
+    return;
+  }
+  scanInFlight = true;
   try {
     await scanForBillPayments();
   } catch (error) {
     console.error('[scanner] unexpected scan error', error);
   } finally {
-    await scheduleNextScan();
+    scanInFlight = false;
+    if (rerunRequested) {
+      rerunRequested = false;
+      void runScanAndReschedule();
+    } else {
+      await scheduleNextScan();
+    }
   }
 }
 

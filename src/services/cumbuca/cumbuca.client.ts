@@ -15,6 +15,17 @@ import type {
 
 const MCP_SERVER_URL = 'https://mcp.cumbuca.com/mcp';
 
+// Timeout de rede pra cada chamada HTTP. Sem isso, uma conexão pendurada
+// (TCP sem resposta) travaria o scanner indefinidamente porque o
+// `runScanAndReschedule` nunca chegaria no `finally`.
+const HTTP_TIMEOUT_MS = 30_000;
+
+function fetchWithTimeout(input: string | URL, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 // Estado de conectividade em memória — não persiste. Refletido pelo último
 // resultado de uma operação contra o MCP.
 let connected = true;
@@ -57,7 +68,7 @@ export interface AuthFlowStart {
 // Registra o bot como novo MCP client via Dynamic Client Registration.
 // Endpoint padrão OAuth2 DCR: POST {server}/register.
 async function registerClient(redirectUri: string): Promise<DcrRegistrationResult> {
-  const response = await fetch(`${MCP_SERVER_URL}/register`, {
+  const response = await fetchWithTimeout(`${MCP_SERVER_URL}/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -130,7 +141,7 @@ export async function exchangeCodeForTokens(
     client_secret: state.clientSecret,
     code_verifier: state.codeVerifier,
   });
-  const response = await fetch(`${MCP_SERVER_URL}/token`, {
+  const response = await fetchWithTimeout(`${MCP_SERVER_URL}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
@@ -141,31 +152,47 @@ export async function exchangeCodeForTokens(
   return (await response.json()) as TokenResponse;
 }
 
+// Serialização de refresh: dois callers concorrentes que detectam token
+// expirado ao mesmo tempo iriam disparar dois POSTs /token. O Cumbuca rotaciona
+// `refresh_token` a cada resposta, então last-write-wins no arquivo e o caller
+// perdedor fica com refresh_token inválido — brickando a integração até
+// rodar `cumbuca:link` de novo. O Promise compartilhado garante que só um
+// HTTP request acontece e os outros recebem o mesmo resultado.
+let inFlightRefresh: Promise<CumbucaTokens> | null = null;
+
 async function refreshAccessToken(tokens: CumbucaTokens): Promise<CumbucaTokens> {
-  const body = new URLSearchParams({
-    grant_type: 'refresh_token',
-    refresh_token: tokens.refresh_token,
-    client_id: tokens.client_id,
-    client_secret: tokens.client_secret,
-  });
-  const response = await fetch(`${MCP_SERVER_URL}/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
-  if (!response.ok) {
-    markDisconnected(`refresh failed: ${response.status}`);
-    throw new Error(`Refresh failed: ${response.status} ${await response.text()}`);
-  }
-  const refreshed = (await response.json()) as TokenResponse;
-  const updated: CumbucaTokens = {
-    ...tokens,
-    access_token: refreshed.access_token,
-    refresh_token: refreshed.refresh_token ?? tokens.refresh_token,
-    expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
-  };
-  await writeTokens(updated);
-  return updated;
+  if (inFlightRefresh) return inFlightRefresh;
+  inFlightRefresh = (async () => {
+    try {
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: tokens.refresh_token,
+        client_id: tokens.client_id,
+        client_secret: tokens.client_secret,
+      });
+      const response = await fetchWithTimeout(`${MCP_SERVER_URL}/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      });
+      if (!response.ok) {
+        markDisconnected(`refresh failed: ${response.status}`);
+        throw new Error(`Refresh failed: ${response.status} ${await response.text()}`);
+      }
+      const refreshed = (await response.json()) as TokenResponse;
+      const updated: CumbucaTokens = {
+        ...tokens,
+        access_token: refreshed.access_token,
+        refresh_token: refreshed.refresh_token ?? tokens.refresh_token,
+        expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
+      };
+      await writeTokens(updated);
+      return updated;
+    } finally {
+      inFlightRefresh = null;
+    }
+  })();
+  return inFlightRefresh;
 }
 
 // -------------- MCP tool calls --------------
