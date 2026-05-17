@@ -1,4 +1,4 @@
-export type BillStatus = 'OPEN' | 'CLOSED';
+export type BillStatus = 'OPEN' | 'CLOSED' | 'EXPIRED';
 export type ParticipantStatus = 'PENDING' | 'PAID';
 
 export interface Participant {

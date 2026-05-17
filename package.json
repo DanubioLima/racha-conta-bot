@@ -6,13 +6,16 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "cumbuca:link": "tsx src/bin/cumbuca-link.ts"
   },
   "dependencies": {
     "@google/genai": "^2.3.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.16.0",
     "dotenv": "^17.0.0",
     "fastify": "^5.8.0",
+    "open": "^11.0.0",
     "qrcode-pix": "^5.0.0",
     "ulid": "^3.0.0"
   },
