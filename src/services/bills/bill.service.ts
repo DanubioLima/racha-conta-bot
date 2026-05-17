@@ -2,6 +2,7 @@ import { ulid } from "ulid";
 import { billRepository } from "../../repositories/bill.repository.js";
 import { buildPixPayload, buildPixQrPngBase64 } from "../pix/pix.js";
 import { notifyUser, notifyUserImage } from "../whatsapp/whatsapp.js";
+import { notifyNewBillCreated } from "../../workers/payment-scanner.worker.js";
 import type {
   Bill,
   ExtractedBill,
@@ -108,6 +109,7 @@ export async function createBillFromExtraction(
     })),
   });
   await sendBillCreatedMessages(bill);
+  notifyNewBillCreated();
   return bill;
 }
 
