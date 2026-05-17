@@ -17,6 +17,12 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
+const ledgerSourceRaw = (process.env.LEDGER_SOURCE ?? 'cumbuca').toLowerCase();
+if (ledgerSourceRaw !== 'cumbuca' && ledgerSourceRaw !== 'mock') {
+  console.error(`Invalid LEDGER_SOURCE "${ledgerSourceRaw}". Expected "cumbuca" or "mock".`);
+  process.exit(1);
+}
+
 export const env = {
   port: Number(process.env.PORT ?? 3000),
   evolutionApiUrl: process.env.EVOLUTION_API_URL!,
@@ -28,4 +34,5 @@ export const env = {
   pixMerchantName: process.env.PIX_MERCHANT_NAME!,
   pixMerchantCity: process.env.PIX_MERCHANT_CITY!,
   workerIntervalMs: Number(process.env.WORKER_INTERVAL_MS ?? 30000),
+  ledgerSource: ledgerSourceRaw as 'cumbuca' | 'mock',
 };
