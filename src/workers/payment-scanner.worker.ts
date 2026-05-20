@@ -110,6 +110,8 @@ export async function scanForBillPayments(): Promise<void> {
     return;
   }
 
+  console.log(`[scanner] credits returned: ${credits.length}`);
+
   for (const transaction of credits) {
     if (await processedTransactionsRepository.wasAlreadyProcessed(transaction.id)) continue;
     const matched = await tryReconcile(transaction);
