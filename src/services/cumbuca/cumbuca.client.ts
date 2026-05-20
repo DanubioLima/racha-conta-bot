@@ -45,6 +45,66 @@ export function isConnected(): boolean {
   return connected;
 }
 
+// -------------- OAuth metadata discovery --------------
+
+// MCP servers expõem onde fica o authorization server via RFC 9728 (Protected
+// Resource Metadata). No caso do Cumbuca não dá pra chumbar /register,
+// /authorize e /token no host do MCP server: o resource server fica em
+// `mcp.cumbuca.com` mas o auth server é um Keycloak separado em
+// `idc.cumbuca.com/realms/cumbuca-mcp`. Sem discovery, todo POST cai no
+// handler MCP genérico e volta 401 em JSON-RPC.
+
+interface OAuthServerMetadata {
+  registration_endpoint: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+}
+
+let cachedAuthServerMetadata: OAuthServerMetadata | null = null;
+
+async function discoverAuthServerMetadata(): Promise<OAuthServerMetadata> {
+  if (cachedAuthServerMetadata) return cachedAuthServerMetadata;
+
+  const resourceOrigin = new URL(MCP_SERVER_URL).origin;
+  const protectedResourceResponse = await fetchWithTimeout(
+    `${resourceOrigin}/.well-known/oauth-protected-resource`,
+  );
+  if (!protectedResourceResponse.ok) {
+    throw new Error(
+      `Failed to fetch protected resource metadata: ${protectedResourceResponse.status}`,
+    );
+  }
+  const protectedResource = (await protectedResourceResponse.json()) as {
+    authorization_servers?: string[];
+  };
+  const authServerUrl = protectedResource.authorization_servers?.[0];
+  if (!authServerUrl) {
+    throw new Error('Protected resource metadata missing authorization_servers');
+  }
+
+  const authServerResponse = await fetchWithTimeout(
+    `${authServerUrl}/.well-known/oauth-authorization-server`,
+    { redirect: 'follow' },
+  );
+  if (!authServerResponse.ok) {
+    throw new Error(
+      `Failed to fetch authorization server metadata: ${authServerResponse.status}`,
+    );
+  }
+  const metadata = (await authServerResponse.json()) as Partial<OAuthServerMetadata>;
+  if (
+    !metadata.registration_endpoint ||
+    !metadata.authorization_endpoint ||
+    !metadata.token_endpoint
+  ) {
+    throw new Error(
+      `Incomplete authorization server metadata: ${JSON.stringify(metadata)}`,
+    );
+  }
+  cachedAuthServerMetadata = metadata as OAuthServerMetadata;
+  return cachedAuthServerMetadata;
+}
+
 // -------------- OAuth / DCR --------------
 
 interface DcrRegistrationResult {
@@ -65,10 +125,9 @@ export interface AuthFlowStart {
   };
 }
 
-// Registra o bot como novo MCP client via Dynamic Client Registration.
-// Endpoint padrão OAuth2 DCR: POST {server}/register.
 async function registerClient(redirectUri: string): Promise<DcrRegistrationResult> {
-  const response = await fetchWithTimeout(`${MCP_SERVER_URL}/register`, {
+  const { registration_endpoint } = await discoverAuthServerMetadata();
+  const response = await fetchWithTimeout(registration_endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -101,15 +160,20 @@ async function pkceChallenge(verifier: string): Promise<string> {
 
 export async function startAuthFlow(redirectUri: string): Promise<AuthFlowStart> {
   const registration = await registerClient(redirectUri);
+  const { authorization_endpoint } = await discoverAuthServerMetadata();
   const codeVerifier = generateCodeVerifier();
   const challenge = await pkceChallenge(codeVerifier);
 
-  const url = new URL(`${MCP_SERVER_URL}/authorize`);
+  const url = new URL(authorization_endpoint);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', registration.client_id);
   url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set('code_challenge', challenge);
   url.searchParams.set('code_challenge_method', 'S256');
+  // Cumbuca anuncia `openid open-finance offline_access`. Precisamos do
+  // `open-finance` pra acessar dados via Open Finance (caminho real até o
+  // banco do user) e do `offline_access` pra ganhar refresh_token.
+  url.searchParams.set('scope', 'openid open-finance offline_access');
 
   return {
     authorizationUrl: url.toString(),
@@ -133,6 +197,7 @@ export async function exchangeCodeForTokens(
   authorizationCode: string,
   state: AuthFlowStart['state'],
 ): Promise<TokenResponse> {
+  const { token_endpoint } = await discoverAuthServerMetadata();
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code: authorizationCode,
@@ -141,7 +206,7 @@ export async function exchangeCodeForTokens(
     client_secret: state.clientSecret,
     code_verifier: state.codeVerifier,
   });
-  const response = await fetchWithTimeout(`${MCP_SERVER_URL}/token`, {
+  const response = await fetchWithTimeout(token_endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
@@ -164,13 +229,14 @@ async function refreshAccessToken(tokens: CumbucaTokens): Promise<CumbucaTokens>
   if (inFlightRefresh) return inFlightRefresh;
   inFlightRefresh = (async () => {
     try {
+      const { token_endpoint } = await discoverAuthServerMetadata();
       const body = new URLSearchParams({
         grant_type: 'refresh_token',
         refresh_token: tokens.refresh_token,
         client_id: tokens.client_id,
         client_secret: tokens.client_secret,
       });
-      const response = await fetchWithTimeout(`${MCP_SERVER_URL}/token`, {
+      const response = await fetchWithTimeout(token_endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body,
