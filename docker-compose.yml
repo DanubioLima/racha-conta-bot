@@ -14,6 +14,8 @@ services:
     image: postgres:15-alpine
     container_name: evolution_postgres
     restart: unless-stopped
+    networks:
+      - racha-conta
     environment:
       POSTGRES_DB: evolution
       POSTGRES_USER: evolution
@@ -30,6 +32,8 @@ services:
     image: redis:7-alpine
     container_name: evolution_redis
     restart: unless-stopped
+    networks:
+      - racha-conta
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - evolution_redis:/data
@@ -38,6 +42,8 @@ services:
     image: evoapicloud/evolution-api:latest
     container_name: evolution_api
     restart: unless-stopped
+    networks:
+      - racha-conta
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,3 +105,7 @@ volumes:
   evolution_postgres:
   evolution_redis:
   evolution_instances:
+
+networks:
+  racha-conta:
+    name: racha-conta
