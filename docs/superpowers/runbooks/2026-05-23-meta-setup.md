@@ -31,9 +31,39 @@ produção.** Pra long-lived:
 
 1. Business Settings → System Users → "Add"
 2. Criar System User com role Admin
-3. Generate token → escolher o App + permissões `whatsapp_business_messaging`
+3. **Atribuir o System User ao App** (ver gotcha abaixo — sem isso, próximo
+   passo trava com "Nenhuma permissão disponível")
+4. Generate token → escolher o App + permissões `whatsapp_business_messaging`
    e `whatsapp_business_management`
-4. Token "Never" (permanent) — anotar. Vai no `WHATSAPP_ACCESS_TOKEN`.
+5. Token "Never" (permanent) — anotar. Vai no `WHATSAPP_ACCESS_TOKEN`.
+
+### Gotcha — "Nenhuma permissão disponível" ao gerar token
+
+Sintoma: você seleciona o App em "Generate Token" mas a lista de permissões
+fica vazia e aparece a mensagem "Atribua uma função do app ao usuário do
+sistema ou selecione outro app para continuar."
+
+Causa: o System User precisa ser atribuído ao App antes — Meta liga os dois
+mundos manualmente.
+
+Fix (escolha um dos dois caminhos, são equivalentes):
+
+**Pelo lado do System User:**
+1. Business Settings → System Users → seu System User
+2. Painel direito "Assigned Assets" / "Recursos atribuídos" → "Add Assets"
+3. Apps → marque o App → role "Manage app" (Full Control)
+4. Save → volte pro Generate Token; permissões agora aparecem
+
+**Pelo lado do App:**
+1. Business Settings → Apps → seu App
+2. Painel "People" / "Pessoas" → "Add People"
+3. Escolha o System User → role "Manage app" / "Develop App"
+4. Save → volte pro Generate Token
+
+Se mesmo após isso só algumas permissões aparecem: confere se você é Admin
+do Business Portfolio (não só Employee). Business Verification pode ser
+exigida pra liberar todas as permissões em contas novas, mas pro nosso
+volume baixo as permissões básicas servem.
 
 ## 5. App Secret
 
@@ -50,12 +80,19 @@ no Meta (passo 8).
 
 Acessar Meta Business → WhatsApp Manager → Message Templates → Create.
 
+### Gotcha — "Esse modelo contém muitas variáveis para sua extensão"
+
+Meta valida o ratio texto-fixo × variáveis. Templates curtos com muitas
+variáveis levam esse erro. Solução: expandir o texto fixo (mais contexto
+em volta dos placeholders). Os 3 templates abaixo já estão dimensionados
+pra passar nessa validação.
+
 ### Template 1: `bill_partial_paid`
 - Category: Utility
 - Language: Portuguese (BR)
 - Body:
   ```
-  💸 {{1}} pagou R$ {{2}} da conta {{3}}. Ainda falta: {{4}}.
+  💸 Atualização do seu Slice: {{1}} acabou de pagar R$ {{2}} referente à conta "{{3}}". Ainda está pendente o pagamento de: {{4}}.
   ```
 - Example parameters (Meta exige exemplo):
   - {{1}} = Maria
@@ -68,7 +105,7 @@ Acessar Meta Business → WhatsApp Manager → Message Templates → Create.
 - Language: Portuguese (BR)
 - Body:
   ```
-  💸 Fechou a conta {{1}}! Todo mundo já pagou.
+  💸 Boas notícias! A sua conta "{{1}}" foi quitada — todos os participantes já enviaram o pagamento via PIX. Saldo zerado.
   ```
 - Example:
   - {{1}} = Pizza
@@ -78,15 +115,20 @@ Acessar Meta Business → WhatsApp Manager → Message Templates → Create.
 - Language: Portuguese (BR)
 - Body:
   ```
-  ⏱️ A conta {{1}} expirou após 7 dias. Pendentes: {{2}}.
+  ⏱️ A sua conta "{{1}}" foi marcada como expirada após 7 dias sem fechar. Participantes que ainda não pagaram: {{2}}.
   ```
 - Example:
   - {{1}} = Pizza
   - {{2}} = Maria, João
 
 Submeter os 3. Aprovação típica: minutos a algumas horas. **Status fica
-"In review" → "Approved" ou "Rejected".** Se rejeitado, simplificar copy
-(sem markdown, sem emoji) e resubmeter.
+"In review" → "Approved" ou "Rejected".** Se rejeitado por outro motivo
+(copy spam-like, etc): simplificar copy (sem markdown, sem emoji exagerado)
+e resubmeter.
+
+**Slots posicionais ficam os mesmos** (Maria → {{1}}, valor → {{2}},
+conta → {{3}}, pendentes → {{4}}), então o código que monta os
+`bodyParameters` no `sendTemplate` não muda.
 
 ## 8. Configurar webhook no Meta
 
