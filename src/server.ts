@@ -1,25 +1,41 @@
 import Fastify from 'fastify';
+import type { FastifyRequest } from 'fastify';
 import { env } from './config/env.js';
 import { registerWhatsAppWebhook } from './routes/whatsapp.webhook.js';
+import { registerCumbucaOAuthRoutes } from './routes/cumbuca.oauth.js';
 import { startPaymentScanner } from './workers/payment-scanner.worker.js';
-
-// A rota de callback OAuth do Cumbuca **não** é registrada aqui de propósito —
-// ela é exposta pelo `bin/cumbuca-link.ts` num Fastify dedicado de curta vida,
-// que disputa a mesma porta com o bot. Em runtime do bot ela não tem consumidor
-// (o listener in-memory só existe enquanto o script de pareamento roda), então
-// deixá-la registrada aqui só geraria 409 e ofuscaria a verdade arquitetural.
-// Pra re-parear: pare o bot, rode `npm run cumbuca:link`.
 
 async function main(): Promise<void> {
   const app = Fastify({ logger: true });
 
-  app.get('/health', async () => ({ ok: true }));
+  // Preserva o rawBody pra verificação HMAC do webhook do WhatsApp. Default do
+  // Fastify descarta. Solução: parser custom que armazena rawBody no request
+  // antes de devolver o JSON parseado pra rota.
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (request: FastifyRequest, body: string, done) => {
+      try {
+        const json = body.length > 0 ? JSON.parse(body) : {};
+        (request as { rawBody?: string }).rawBody = body;
+        done(null, json);
+      } catch (err) {
+        done(err as Error);
+      }
+    },
+  );
+
+  app.get('/healthz', async () => ({
+    ok: true,
+    ts: new Date().toISOString(),
+  }));
+
   registerWhatsAppWebhook(app);
+  registerCumbucaOAuthRoutes(app);
 
   // Inicia o scanner antes do listen pra evitar a janela em que o webhook
   // do WhatsApp poderia chegar e chamar `notifyNewBillCreated` antes do
-  // scanner estar pronto. `startPaymentScanner` retorna imediatamente
-  // (dispatch via `void`), então não atrasa o listen.
+  // scanner estar pronto.
   await startPaymentScanner();
   await app.listen({ port: env.port, host: '0.0.0.0' });
 }
