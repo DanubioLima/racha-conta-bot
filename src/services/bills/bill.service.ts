@@ -1,7 +1,7 @@
 import { ulid } from "ulid";
 import { billRepository } from "../../repositories/bill.repository.js";
-import { buildPixPayload, buildPixQrPngBase64 } from "../pix/pix.js";
-import { notifyUser, notifyUserImage } from "../whatsapp/whatsapp.js";
+import { buildPixPayload } from "../pix/pix.js";
+import { notifyUser } from "../whatsapp/whatsapp.js";
 import { notifyNewBillCreated } from "../../workers/payment-scanner.worker.js";
 import type {
   Bill,
@@ -34,11 +34,10 @@ function buildParticipants(
 }
 
 async function sendBillCreatedMessages(bill: Bill): Promise<void> {
-  // WhatsApp consumer accounts paired via Baileys don't render the native
-  // "Copiar código PIX" button for static BR Codes. So per participant we send
-  // a single image message: the QR PNG with the participant label + the
-  // Copia-e-Cola string in the caption. Bank apps extract the BR Code from
-  // pasted text even when it's surrounded by other content.
+  // Por participante mandamos uma mensagem de texto isolada contendo só a
+  // string Copia-e-Cola — bubble minimática, long-press copia exatamente
+  // o BR Code sem cruft. O QR PNG (`buildPixQrPngBase64`) está dormente em
+  // `pix.ts` caso a gente queira voltar a enviar imagem no futuro.
   const names = bill.participants.map((p) => p.name).join(" e ");
   await notifyUser(
     `Anotei sua conta de ${formatBRL(bill.total_amount)} em "${bill.description}". ` +
@@ -46,18 +45,8 @@ async function sendBillCreatedMessages(bill: Bill): Promise<void> {
       `Mando o PIX de cada um (${names}) a seguir.`,
   );
 
-  for (let i = 0; i < bill.participants.length; i++) {
-    const participant = bill.participants[i]!;
-    const qrBase64 = await buildPixQrPngBase64({
-      amount: participant.amount_due,
-      txid: `${bill.id.slice(-10)}${i}`,
-      message: `Racha: ${bill.description}`.slice(0, 60),
-    });
-    const caption =
-      `💸 *${participant.name}* — ${formatBRL(participant.amount_due)}\n\n` +
-      `Escaneia o QR ou copia o PIX abaixo 👇\n\n` +
-      participant.pix_payload;
-    await notifyUserImage(qrBase64, caption);
+  for (const participant of bill.participants) {
+    await notifyUser(participant.pix_payload);
   }
 }
 
