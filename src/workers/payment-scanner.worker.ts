@@ -15,6 +15,10 @@ const SEVEN_DAYS_MS = 7 * ONE_DAY_MS;
 const MIN_LOOKBACK_MS = ONE_HOUR_MS;
 
 let scanTimer: NodeJS.Timeout | null = null;
+// Quando `scanTimer` está agendado, contém o epoch (ms) em que ele vai
+// disparar. Usado pra decidir se uma bill nova justifica reagendar mais
+// cedo (ver `notifyNewBillCreated`).
+let scanTimerFiresAt: number | null = null;
 let ledgerSource: LedgerSource | null = null;
 
 // Re-entrancy guard. `scanInFlight` impede que dois ciclos de scan rodem
@@ -154,25 +158,46 @@ async function scheduleNextScan(): Promise<void> {
   if (delay === null) {
     console.log('[scanner] going idle — will wake on next bill');
     scanTimer = null;
+    scanTimerFiresAt = null;
     return;
   }
   console.log(`[scanner] next scan in ${Math.round(delay / 1000)}s`);
+  scanTimerFiresAt = Date.now() + delay;
   scanTimer = setTimeout(() => {
+    scanTimer = null;
+    scanTimerFiresAt = null;
     void runScanAndReschedule();
   }, delay);
 }
 
-// Chamada pelo bill.service quando uma bill nova é criada. Garante que o
-// scanner saia do idle, mas DELIBERADAMENTE não dispara scan imediato:
-// o Cumbuca tem cache server-side por chave (dia BRT × accountId × fromDate ×
-// toDate). Se a gente pede a janela cedo demais — antes do PIX cair no Open
-// Finance — a primeira resposta vazia "ancora" pro resto do dia, queimando
-// a chance de reconciliar até a virada de dia BRT. O tick periódico
-// (5min pra bills com <1h de idade) já cobre a janela útil de propagação.
+// Chamada pelo bill.service quando uma bill nova é criada. NÃO dispara scan
+// imediato — janelas cedo demais envenenam o cache server-side do Cumbuca
+// (chave por dia BRT × accountId × fromDate × toDate): se o PIX ainda não
+// caiu no Open Finance, a primeira resposta vazia "ancora" pro resto do dia.
+// Em vez disso, recomputa a cadência: como a bill nova vira o "newest", o
+// delay tipicamente cai pro bucket de 5min, e queremos reagendar se isso for
+// mais cedo que o timer já em curso (caso onde havia só bills velhas com
+// timer de 1h/6h).
 export function notifyNewBillCreated(): void {
-  if (scanTimer !== null || scanInFlight) return;
-  console.log('[scanner] new bill — waking scanner from idle');
-  void scheduleNextScan();
+  // Se um scan está em curso, o finally dele já vai chamar `scheduleNextScan`
+  // depois — recalculando a cadência com a bill nova já no repo.
+  if (scanInFlight) return;
+  void rescheduleScanIfNewBillIsSooner();
+}
+
+async function rescheduleScanIfNewBillIsSooner(): Promise<void> {
+  if (scanInFlight) return;
+  const openBills = await billRepository.findOpen();
+  const newDelay = computeNextScanDelay(openBills);
+  if (newDelay === null) return;
+
+  const newFiresAt = Date.now() + newDelay;
+  if (scanTimerFiresAt !== null && scanTimerFiresAt <= newFiresAt) return;
+
+  if (scanTimer !== null) clearTimeout(scanTimer);
+  scanTimer = null;
+  scanTimerFiresAt = null;
+  await scheduleNextScan();
 }
 
 export async function startPaymentScanner(): Promise<void> {
