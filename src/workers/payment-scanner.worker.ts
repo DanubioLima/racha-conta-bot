@@ -162,15 +162,17 @@ async function scheduleNextScan(): Promise<void> {
   }, delay);
 }
 
-// Chamada pelo bill.service quando uma bill nova é criada. Cancela o cooldown
-// atual e dispara um scan imediato — UX de "sob demanda".
+// Chamada pelo bill.service quando uma bill nova é criada. Garante que o
+// scanner saia do idle, mas DELIBERADAMENTE não dispara scan imediato:
+// o Cumbuca tem cache server-side por chave (dia BRT × accountId × fromDate ×
+// toDate). Se a gente pede a janela cedo demais — antes do PIX cair no Open
+// Finance — a primeira resposta vazia "ancora" pro resto do dia, queimando
+// a chance de reconciliar até a virada de dia BRT. O tick periódico
+// (5min pra bills com <1h de idade) já cobre a janela útil de propagação.
 export function notifyNewBillCreated(): void {
-  if (scanTimer) {
-    clearTimeout(scanTimer);
-    scanTimer = null;
-  }
-  console.log('[scanner] new bill — triggering immediate scan');
-  void runScanAndReschedule();
+  if (scanTimer !== null || scanInFlight) return;
+  console.log('[scanner] new bill — waking scanner from idle');
+  void scheduleNextScan();
 }
 
 export async function startPaymentScanner(): Promise<void> {
