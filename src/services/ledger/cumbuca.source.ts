@@ -3,12 +3,23 @@ import { listAccountTransactions } from '../cumbuca/cumbuca.client.js';
 import { isReceivedPix, toIncomingTransaction } from '../cumbuca/cumbuca.mapper.js';
 import type { LedgerSource } from './ledger.source.js';
 
+// Gera YYYY-MM-DD em fuso de Brasília. Cumbuca/Open Finance Brasil opera
+// nesse fuso: pedir "2026-05-20" lá significa um dia BRT (entre 03:00 UTC
+// daquele dia e 02:59:59 UTC do dia seguinte). Se a gente passar a data em
+// UTC, transações feitas entre 21:00 BRT e 23:59 BRT (que em UTC já estão
+// no dia seguinte) ficam fora da janela. Bug observado: PIX recebido em
+// 19/maio 23:20 BRT → 20/maio 02:20 UTC; scanner pedia fromDate=toDate=
+// 2026-05-20 e Cumbuca devolvia vazio porque a transação estava em "19/05 BRT".
+const brasiliaDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Sao_Paulo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
 function toYYYYMMDD(isoOrDate: string | Date): string {
-  // Usa data UTC, não a local. Pode "perder" o início do dia local quando
-  // chamado perto da meia-noite, mas o scanner aplica MIN_LOOKBACK_MS (1h)
-  // sobre o `sinceISO`, então a janela fica garantida com folga.
   const date = typeof isoOrDate === 'string' ? new Date(isoOrDate) : isoOrDate;
-  return date.toISOString().slice(0, 10);
+  return brasiliaDateFormatter.format(date);
 }
 
 export const cumbucaLedgerSource: LedgerSource = {
