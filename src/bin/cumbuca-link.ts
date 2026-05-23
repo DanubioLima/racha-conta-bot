@@ -1,21 +1,23 @@
-import Fastify from 'fastify';
 import open from 'open';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { createInterface } from 'node:readline/promises';
 import { env } from '../config/env.js';
 import {
   startAuthFlow,
-  exchangeCodeForTokens,
   listAccounts,
 } from '../services/cumbuca/cumbuca.client.js';
-import { writeTokens, hasTokens } from '../services/cumbuca/cumbuca.tokens.js';
 import {
-  registerCumbucaOAuthRoutes,
-  registerCallbackListener,
-  clearCallbackListener,
-} from '../routes/cumbuca.oauth.js';
+  writeTokens,
+  readTokens,
+  hasTokens,
+} from '../services/cumbuca/cumbuca.tokens.js';
+import { writePendingPairing } from '../services/cumbuca/cumbuca.pending-pairing.js';
+import { randomBytes } from 'node:crypto';
 import type { CumbucaAccount } from '../services/cumbuca/cumbuca.types.js';
 
-const REDIRECT_URI = `http://localhost:${env.port}/oauth/cumbuca/callback`;
+const REDIRECT_URI = `${env.publicBaseUrl}/oauth/cumbuca/callback`;
+const POLL_INTERVAL_MS = 1500;
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
 async function promptAccountChoice(accounts: CumbucaAccount[]): Promise<CumbucaAccount> {
   if (accounts.length === 1) {
@@ -37,6 +39,15 @@ async function promptAccountChoice(accounts: CumbucaAccount[]): Promise<CumbucaA
   return accounts[choice - 1]!;
 }
 
+async function pollForTokens(): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < POLL_TIMEOUT_MS) {
+    if (await hasTokens()) return;
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error('Pareamento expirou após 10 min sem callback chegar.');
+}
+
 async function main(): Promise<void> {
   if (await hasTokens()) {
     console.log('[oauth] Já existe data/cumbuca-tokens.json. Apague-o antes de re-parear, se essa for a intenção.');
@@ -47,62 +58,48 @@ async function main(): Promise<void> {
   const flow = await startAuthFlow(REDIRECT_URI);
   console.log(`[oauth] client_id obtido: ${flow.state.clientId}`);
 
-  const app = Fastify({ logger: false });
-  registerCumbucaOAuthRoutes(app);
+  // O state OAuth deve ser único por flow pra ligar callback ao pending file.
+  // Cumbuca não devolve state — geramos um nosso e injetamos no authorize URL.
+  const oauthState = randomBytes(24).toString('base64url');
+  const authorizationUrlWithState = new URL(flow.authorizationUrl);
+  authorizationUrlWithState.searchParams.set('state', oauthState);
 
-  const codeReceived: Promise<string> = new Promise((resolve) => {
-    registerCallbackListener((code) => resolve(code));
+  await writePendingPairing({
+    state: oauthState,
+    client_id: flow.state.clientId,
+    client_secret: flow.state.clientSecret,
+    code_verifier: flow.state.codeVerifier,
+    redirect_uri: flow.state.redirectUri,
+    created_at: new Date().toISOString(),
   });
 
-  await app.listen({ port: env.port, host: '127.0.0.1' });
-  console.log(`[oauth] Callback escutando em ${REDIRECT_URI}`);
-
   console.log('\n[oauth] Abra esta URL no browser pra autorizar:');
-  console.log(`        ${flow.authorizationUrl}\n`);
+  console.log(`        ${authorizationUrlWithState.toString()}\n`);
   try {
-    await open(flow.authorizationUrl);
+    await open(authorizationUrlWithState.toString());
   } catch {
     console.log('[oauth] (não consegui abrir o browser automaticamente — copie a URL acima)');
   }
 
-  const authorizationCode = await codeReceived;
-  clearCallbackListener();
-  console.log('[oauth] Code recebido, trocando por access_token...');
-  const tokens = await exchangeCodeForTokens(authorizationCode, flow.state);
+  console.log('[oauth] Aguardando callback do Cumbuca...');
+  await pollForTokens();
+  console.log('[oauth] Tokens recebidos pelo servidor. Listando contas...');
 
-  // Salva tokens preliminares (sem account_id ainda) pro client conseguir
-  // chamar list_accounts logo abaixo.
-  await writeTokens({
-    client_id: flow.state.clientId,
-    client_secret: flow.state.clientSecret,
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
-    account_id: '',
-  });
-
-  console.log('[oauth] Listando contas...');
   const { accounts } = await listAccounts();
   if (accounts.length === 0) {
     throw new Error('Cumbuca não retornou contas. Consent está aprovado? Reveja no app do banco.');
   }
   const chosen = await promptAccountChoice(accounts);
 
+  const current = await readTokens();
   await writeTokens({
-    client_id: flow.state.clientId,
-    client_secret: flow.state.clientSecret,
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+    ...current,
     account_id: chosen.accountId,
   });
 
   console.log(
     `[oauth] ✅ Pareado com ${chosen.brandName} (account_id=${chosen.accountId}). Tokens em data/cumbuca-tokens.json.`,
   );
-  console.log('[oauth] Inicie o bot com `npm run dev`.');
-
-  await app.close();
   process.exit(0);
 }
 
