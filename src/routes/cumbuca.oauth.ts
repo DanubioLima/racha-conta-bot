@@ -22,8 +22,10 @@ export function registerCumbucaOAuthRoutes(app: FastifyInstance): void {
       const { code, error } = request.query as { code?: string; error?: string };
 
       if (error) {
-        reply.type('text/html').send(
-          `<h1>❌ Autorização cancelada</h1><p>${error}</p><p>Pode fechar esta aba.</p>`,
+        // text/plain pra não interpolar `error` (atacante-controlado) em HTML.
+        // Servidor é localhost-only e efêmero, mas o princípio se mantém.
+        reply.type('text/plain; charset=utf-8').send(
+          `Autorização cancelada: ${error}\nPode fechar esta aba.`,
         );
         return;
       }
