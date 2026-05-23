@@ -87,12 +87,19 @@ variáveis levam esse erro. Solução: expandir o texto fixo (mais contexto
 em volta dos placeholders). Os 3 templates abaixo já estão dimensionados
 pra passar nessa validação.
 
+### Gotcha — "Variáveis não podem estar no começo ou fim do texto"
+
+Meta exige texto fixo antes E depois de cada variável — o último `{{N}}`
+não pode ser a última coisa do body (mesmo seguido de pontuação). Solução:
+adicionar uma frase de fechamento após a última variável. Os templates 1 e
+3 abaixo já têm fechamento; o template 2 só tem 1 variável no meio.
+
 ### Template 1: `bill_partial_paid`
 - Category: Utility
 - Language: Portuguese (BR)
 - Body:
   ```
-  💸 Atualização do seu Slice: {{1}} acabou de pagar R$ {{2}} referente à conta "{{3}}". Ainda está pendente o pagamento de: {{4}}.
+  💸 Atualização do seu Slice: {{1}} acabou de pagar R$ {{2}} referente à conta "{{3}}". Ainda está pendente o pagamento de: {{4}}. Vou te avisar quando todo mundo quitar.
   ```
 - Example parameters (Meta exige exemplo):
   - {{1}} = Maria
@@ -115,7 +122,7 @@ pra passar nessa validação.
 - Language: Portuguese (BR)
 - Body:
   ```
-  ⏱️ A sua conta "{{1}}" foi marcada como expirada após 7 dias sem fechar. Participantes que ainda não pagaram: {{2}}.
+  ⏱️ A sua conta "{{1}}" foi marcada como expirada após 7 dias sem fechar. Participantes que ainda não pagaram: {{2}}. Pode reabrir manualmente se quiser dar mais tempo.
   ```
 - Example:
   - {{1}} = Pizza
