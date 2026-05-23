@@ -1,6 +1,6 @@
 # Cumbuca Real Integration — Design
 
-**Status:** approved (design phase) — implementation pending
+**Status:** implemented — shipped in PR #1
 **Date:** 2026-05-17
 **Author:** Danubio + Claude (brainstorm)
 **Replaces:** mock-based ledger source (`src/mock/incoming-transactions.json`)
