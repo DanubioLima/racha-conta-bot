@@ -1,42 +1,20 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { env } from "../config/env.js";
-import { extractBillFromText } from "../services/llm/gemini.js";
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import crypto from 'node:crypto';
+import { env } from '../config/env.js';
+import { extractBillFromText } from '../services/llm/gemini.js';
 import {
   createBillFromExtraction,
   notifyUnknown,
-} from "../services/bills/bill.service.js";
-import { wasSentByBot } from "../services/whatsapp/whatsapp.js";
+} from '../services/bills/bill.service.js';
+import { recordInboundFromUser } from '../services/whatsapp/window.js';
+import type {
+  MetaWebhookBody,
+  MetaWebhookMessage,
+} from '../services/whatsapp/cloudapi.types.js';
 
-// Evolution API MESSAGES_UPSERT payload (only the fields we care about).
-interface EvolutionWebhookBody {
-  event?: string;
-  data?: {
-    key?: { remoteJid?: string; fromMe?: boolean; id?: string };
-    message?: {
-      conversation?: string;
-      extendedTextMessage?: { text?: string };
-    };
-  };
-}
-
-function extractText(body: EvolutionWebhookBody): string | null {
-  const msg = body?.data?.message;
-  return msg?.conversation ?? msg?.extendedTextMessage?.text ?? null;
-}
-
-function extractRemoteNumber(body: EvolutionWebhookBody): string | null {
-  const jid = body?.data?.key?.remoteJid;
-  if (!jid) return null;
-  // remoteJid looks like "5511999999999@s.whatsapp.net" — keep only the number.
-  return jid.split("@")[0] ?? null;
-}
-
-// Brazilian "nono dígito": some carriers / WhatsApp installs strip the leading
-// 9 on mobile numbers. 5588998082034 and 558898082034 are the same line.
-// Normalize both sides before comparing.
 function normalizeBrNumber(num: string): string {
-  const digits = num.replace(/\D/g, "");
-  if (digits.length === 13 && digits.startsWith("55") && digits[4] === "9") {
+  const digits = num.replace(/\D/g, '');
+  if (digits.length === 13 && digits.startsWith('55') && digits[4] === '9') {
     return digits.slice(0, 4) + digits.slice(5);
   }
   return digits;
@@ -46,70 +24,118 @@ function numbersMatch(a: string, b: string): boolean {
   return normalizeBrNumber(a) === normalizeBrNumber(b);
 }
 
+function verifyMetaSignature(rawBody: string, signatureHeader: string | undefined): boolean {
+  if (!signatureHeader) return false;
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', env.whatsappAppSecret)
+    .update(rawBody, 'utf8')
+    .digest('hex');
+  if (expected.length !== signatureHeader.length) return false;
+  return crypto.timingSafeEqual(
+    Buffer.from(expected),
+    Buffer.from(signatureHeader),
+  );
+}
+
+function collectMessages(body: MetaWebhookBody): MetaWebhookMessage[] {
+  const messages: MetaWebhookMessage[] = [];
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      for (const message of change.value.messages ?? []) {
+        messages.push(message);
+      }
+    }
+  }
+  return messages;
+}
+
+function extractText(message: MetaWebhookMessage): string | null {
+  if (message.type === 'text' && message.text?.body) return message.text.body;
+  return null;
+}
+
 export function registerWhatsAppWebhook(app: FastifyInstance): void {
-  app.post(
-    "/webhooks/whatsapp",
+  // -------- GET: verificação inicial pelo Meta --------
+  app.get(
+    '/webhooks/whatsapp',
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const body = request.body as EvolutionWebhookBody;
-      console.log("[webhook] event received", {
-        event: body?.event,
-        fromMe: body?.data?.key?.fromMe,
-        remoteJid: body?.data?.key?.remoteJid,
-        messageId: body?.data?.key?.id,
-      });
+      const query = request.query as Record<string, string | undefined>;
+      const mode = query['hub.mode'];
+      const token = query['hub.verify_token'];
+      const challenge = query['hub.challenge'];
+      if (mode === 'subscribe' && token === env.whatsappVerifyToken && challenge) {
+        console.log('[webhook] verification ok');
+        reply.type('text/plain').send(challenge);
+        return;
+      }
+      console.warn('[webhook] verification failed', { mode, tokenMatches: token === env.whatsappVerifyToken });
+      reply.code(403).send();
+    },
+  );
 
-      // Only handle conversations involving the configured user number. In the
-      // single-user MVP, that's always the user messaging themselves.
-      const remoteNumber = extractRemoteNumber(body);
-      if (!remoteNumber || !numbersMatch(remoteNumber, env.userWhatsappNumber)) {
-        console.log("[webhook] ignored: unauthorized-remote", {
-          remoteNumber,
-          expected: env.userWhatsappNumber,
-        });
-        return reply
-          .code(200)
-          .send({ ok: true, ignored: "unauthorized-remote" });
+  // -------- POST: entrega de mensagens --------
+  app.post(
+    '/webhooks/whatsapp',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const rawBody = (request as { rawBody?: string }).rawBody;
+      if (!rawBody) {
+        console.error('[webhook] missing rawBody — parser misconfigured');
+        return reply.code(500).send();
+      }
+      const signature = request.headers['x-hub-signature-256'];
+      const signatureValue = Array.isArray(signature) ? signature[0] : signature;
+      if (!verifyMetaSignature(rawBody, signatureValue)) {
+        console.warn('[webhook] HMAC verification failed');
+        return reply.code(401).send();
       }
 
-      const text = extractText(body);
-      if (!text) {
-        console.log("[webhook] ignored: no-text");
-        return reply.code(200).send({ ok: true, ignored: "no-text" });
+      const body = request.body as MetaWebhookBody;
+      if (body.object !== 'whatsapp_business_account') {
+        console.log('[webhook] ignored: wrong object type', { object: body.object });
+        return reply.code(200).send({ ok: true, ignored: 'wrong-object' });
       }
 
-      // The user messages themselves, so legitimate user-typed messages arrive
-      // with fromMe=true. So do the bot's own outgoing messages, echoed back via
-      // MESSAGES_UPSERT. Filter the echoes by checking the id/text cache.
-      if (body?.data?.key?.fromMe && wasSentByBot(body.data.key.id, text)) {
-        console.log("[webhook] ignored: bot-echo", {
-          messageId: body.data.key.id,
-        });
-        return reply.code(200).send({ ok: true, ignored: "bot-echo" });
+      const messages = collectMessages(body);
+      if (messages.length === 0) {
+        // Status updates ou events sem `messages` — log e ignora.
+        console.log('[webhook] no messages in batch');
+        return reply.code(200).send({ ok: true });
       }
 
-      console.log("[webhook] processing user message", {
-        text,
-        fromMe: body?.data?.key?.fromMe,
-      });
-
-      // Reply 200 immediately and run the flow in the background so Evolution
-      // doesn't retry on slow LLM calls.
+      // Reply 200 imediato; processa async pra Meta não retentar em chamadas
+      // longas (Gemini, scanner).
       void (async () => {
-        try {
-          const result = await extractBillFromText(text);
-          if (result.intent !== "create_bill" || !result.bill) {
-            console.log("[webhook] intent unknown, notifying user");
-            await notifyUnknown();
-            return;
+        for (const message of messages) {
+          if (!numbersMatch(message.from, env.userWhatsappNumber)) {
+            console.log('[webhook] ignored: unauthorized-sender', {
+              from: message.from,
+              expected: env.userWhatsappNumber,
+            });
+            continue;
           }
-          await createBillFromExtraction(result.bill);
-          console.log("[webhook] flow finished ok");
-        } catch (err) {
-          console.error("[webhook] flow failed", err);
+          await recordInboundFromUser(message.from);
+          const text = extractText(message);
+          if (!text) {
+            console.log('[webhook] ignored: non-text', { type: message.type });
+            continue;
+          }
+          console.log('[webhook] processing', { messageId: message.id, text });
           try {
-            await notifyUnknown();
-          } catch {
-            // already logged
+            const result = await extractBillFromText(text);
+            if (result.intent !== 'create_bill' || !result.bill) {
+              console.log('[webhook] intent unknown, notifying user');
+              await notifyUnknown();
+              continue;
+            }
+            await createBillFromExtraction(result.bill);
+            console.log('[webhook] flow finished ok', { messageId: message.id });
+          } catch (err) {
+            console.error('[webhook] flow failed', err);
+            try {
+              await notifyUnknown();
+            } catch {
+              // already logged
+            }
           }
         }
       })();
