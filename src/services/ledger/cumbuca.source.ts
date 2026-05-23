@@ -30,14 +30,20 @@ export const cumbucaLedgerSource: LedgerSource = {
     const fromDate = toYYYYMMDD(sinceISO);
     const toDate = toYYYYMMDD(new Date());
 
+    console.log('[cumbuca] list_account_transactions', { fromDate, toDate });
+
     const response = await listAccountTransactions({
       accountId: tokens.account_id,
       fromDate,
       toDate,
     });
 
-    return response.transactions
-      .filter(isReceivedPix)
-      .map(toIncomingTransaction);
+    const filtered = response.transactions.filter(isReceivedPix);
+    console.log('[cumbuca] transactions', {
+      raw: response.transactions.length,
+      pixCredits: filtered.length,
+    });
+
+    return filtered.map(toIncomingTransaction);
   },
 };
