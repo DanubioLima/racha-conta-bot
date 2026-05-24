@@ -25,6 +25,7 @@ if (ledgerSourceRaw !== 'cumbuca' && ledgerSourceRaw !== 'mock') {
 
 export const env = {
   port: Number(process.env.PORT ?? 3000),
+  publicBaseUrl: process.env.PUBLIC_BASE_URL ?? `http://localhost:${Number(process.env.PORT ?? 3000)}`,
   evolutionApiUrl: process.env.EVOLUTION_API_URL!,
   evolutionApiKey: process.env.EVOLUTION_API_KEY!,
   evolutionInstance: process.env.EVOLUTION_INSTANCE!,
