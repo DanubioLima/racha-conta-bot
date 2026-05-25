@@ -310,7 +310,10 @@ do path host `/home/slice/slice-data/` recebe o novo `.db`.
 type Intent =
   | { intent: 'create_bill'; bill: ExtractedBill }
   | { intent: 'register_account'; profile: Partial<RegisterProfile> }
-  | { intent: 'link_bank' }
+  | { intent: 'link_bank' }   // recovery/manual: user diz "reconectar banco",
+                              // "meu nubank desconectou", etc. NÃO é a porta
+                              // de entrada do bank linking — o bot DRIVES
+                              // o linking proativamente após register.
   | { intent: 'unknown' };
 
 interface RegisterProfile {
@@ -337,8 +340,13 @@ Exemplos no prompt (few-shot):
 - "Paguei 60 na pizza, divide com Ana e Beto" → `create_bill`
 - "Oi, sou João, minha chave pix é joao@email.com" → `register_account` com name + pix_key
 - "Sou Maria" (sem PIX) → `register_account` parcial (só name)
-- "Quero conectar meu banco" / "conectar conta" / "linkar nubank" → `link_bank`
+- "Meu nubank desconectou" / "preciso reconectar" / "reconectar banco" → `link_bank` (raro — só recovery)
 - "Bom dia" / mensagem genérica → `unknown`
+
+Note: usuário em onboarding **não precisa pedir** pra conectar banco. O
+bot conduz proativamente (ver §6.1). `link_bank` é safety-net pra casos
+em que o user expressa explicitamente que algo deu errado e quer
+re-conectar.
 
 ### 5.3 Dispatcher no webhook
 
@@ -365,7 +373,7 @@ switch (intent.intent) {
 
 ## 6. Auto-registro de user via WhatsApp
 
-### 6.1 Fluxo conceitual
+### 6.1 Fluxo conceitual — bot conduzindo proativamente
 
 ```
 User (desconhecido) → "oi"
@@ -376,31 +384,71 @@ Bot: "Bem-vindo ao Slice 👋 Pra começar, me responde com:
   ↓
 User: "João Silva, joao@email.com"
   ↓
-Gemini → { intent: 'register_account', profile: { name: 'João Silva', pix_key: 'joao@email.com' } }
+Gemini → { intent: 'register_account', profile: { name, pix_key } }
   ↓
-userService persiste; bot: "Tudo certo João! Você já pode criar contas.
-                            Manda algo tipo 'paguei 60 na pizza, divide
-                            com Ana e Beto' que eu gero os PIX.
-                            
-                            Pra ter notificação automática quando alguém
-                            pagar você, conecte seu banco com 'conectar banco'."
+userService.persist(user)
   ↓
-User: "conectar banco"
+Bot envia 2 mensagens em sequência:
   ↓
-Gemini → { intent: 'link_bank' }
+  [1] "Tudo certo, João! Já pode criar contas — manda algo tipo
+      'paguei 60 na pizza, divide com Ana e Beto'."
   ↓
-cumbucaService gera authorize URL específica pro user e manda
+  [2] "Antes de você começar, falta um passo curto. Pra eu te avisar
+      automaticamente quando alguém te pagar via PIX, preciso conectar
+      com seu banco. Funciona via Open Finance:
+      
+      • Você autoriza direto no app do seu banco (~30s)
+      • Eu só vejo as entradas (não vejo saídas, saldo, nem nada pessoal)
+      • Pode revogar a qualquer momento no app do banco
+      
+      Toque aqui pra autorizar:
+      <authorize_url>
+      
+      Depois é só voltar pro WhatsApp."
   ↓
-User abre URL → consent banco → callback → tokens persistem keyed por user.phone
+User abre URL → consent no banco → callback Cumbuca → callback Slice
+  ↓
+cumbucaService.handleCallback(state, code):
+  → tokens persistem keyed por user.phone
+  → account selection automática
+  ↓
+Bot envia mensagem WhatsApp:
+  ↓
+  "Pronto, conectado! 🎉 Agora vou te avisar automaticamente quando
+   seus contatos pagarem. Pode criar sua primeira conta aí."
 ```
+
+**Decisão importante:** o link é mandado no MESMO momento da confirmação
+de cadastro, antes do user pedir. Reduz fricção e capitaliza no momento
+de mais engajamento (user acabou de se cadastrar, ainda focado no bot).
 
 ### 6.2 Edge cases
 
-- **Profile parcial no primeiro registro**: user manda só "Sou João" sem PIX. Bot persiste o nome e pede o PIX especificamente ("Falta só sua chave PIX").
-- **Tentativa de criar bill sem registro**: bot detecta `intent=create_bill` mas user não existe; responde "Pra usar o Slice preciso te cadastrar primeiro. Me responde com Nome: X, PIX: y".
-- **Tentativa de criar bill sem PIX cadastrado**: similar, pede PIX antes.
-- **Tentativa de link_bank sem cadastro**: pede cadastro primeiro.
-- **Reenvio de PIX numa segunda mensagem**: aceitamos update via `register_account` intent — útil pra correção. ("Minha chave PIX mudou pra X" → update do PIX no profile).
+- **Profile parcial no primeiro registro**: user manda só "Sou João" sem
+  PIX. Bot persiste o nome e pede o PIX especificamente ("Falta só sua
+  chave PIX"). Quando completar, dispara o fluxo de link banco da §6.1.
+- **User ignora o link e cria bill antes de conectar**: bot **não bloqueia**
+  a criação. Manda PIX normalmente e adiciona um lembrete sutil ao final
+  da mensagem inicial: "💡 Pra eu detectar pagamentos automaticamente,
+  conecte seu banco: <authorize_url>". A bill fica OPEN e pode ser
+  fechada manualmente (item futuro de admin commands) ou expira em 7 dias.
+- **User clica no link, autoriza, mas falha o callback** (rede caiu, etc.):
+  na próxima mensagem do user, bot detecta sem tokens persistidos +
+  pending pairing expirado, e re-driva o link: "Algo deu errado no último
+  pareamento. Tenta de novo: <novo_authorize_url>".
+- **User com pending pairing ativo** (clicou link, ainda não voltou): bot
+  reconhece pending não-expirado e responde "Tá esperando você terminar
+  no banco. Volta aqui depois de autorizar." em vez de gerar URL nova.
+- **Tentativa de criar bill sem registro**: bot responde "Pra usar o
+  Slice preciso te cadastrar primeiro. Me responde com Nome: X, PIX: y".
+- **Tentativa de criar bill sem PIX cadastrado**: bot pede PIX antes.
+- **`link_bank` explícito (recovery)**: user diz "reconectar banco" /
+  "meu nubank desconectou" → bot apaga tokens antigos (se houver),
+  dispara nova URL com explicação reduzida ("Reconectando seu banco.
+  Toque aqui: <url>").
+- **Reenvio de PIX numa segunda mensagem**: aceitamos update via
+  `register_account` intent — útil pra correção. ("Minha chave PIX mudou
+  pra X" → update do PIX no profile).
 
 ### 6.3 Bot não bloqueia bill por banco não conectado
 
@@ -448,14 +496,17 @@ truncar a tabela `cumbuca_app` manualmente.
 Reaproveita o refactor que já está na branch (file-based pending pairing
 → DB-backed pending pairing keyed por user_phone):
 
-1. User manda "conectar banco" → bot identifica `intent=link_bank`
+1. Bot decide gerar link — proativamente após register (caminho principal,
+   ver §6.1) **OU** quando user emite `intent=link_bank` (caminho de
+   recovery)
 2. `cumbucaService.startOAuthForUser(user)`:
    - `cumbucaAppRepository.get()` ou lazy-bootstrap
    - Gera state random + code_verifier (PKCE)
    - `cumbucaPendingPairingRepository.set({ user_phone, state, code_verifier, ... })`
    - Monta authorize URL com app `client_id`, state, code_challenge,
      redirect_uri `https://bot.appslice.com.br/oauth/cumbuca/callback`
-3. Bot manda URL pro user via WhatsApp
+3. Bot manda URL pro user via WhatsApp envolto na mensagem explicativa
+   (texto completo da §6.1; em caso de recovery, versão curta)
 4. User abre URL → consent no banco → callback Cumbuca → callback Slice
 5. Rota `/oauth/cumbuca/callback`:
    - Recebe `code` + `state`
