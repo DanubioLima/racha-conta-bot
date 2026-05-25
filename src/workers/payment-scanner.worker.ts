@@ -4,6 +4,7 @@ import { tryReconcile } from '../services/bills/bill.service.js';
 import { createLedgerSource } from '../services/ledger/factory.js';
 import { sendText } from '../services/whatsapp/whatsapp.js';
 import { env } from '../config/env.js';
+import { normalizeBrNumber } from '../lib/phone.js';
 import type { Bill } from '../services/bills/bill.types.js';
 import type { LedgerSource } from '../services/ledger/ledger.source.js';
 
@@ -70,6 +71,14 @@ async function expireBillsOlderThanSevenDays(openBills: Bill[]): Promise<void> {
     });
     if (!expired) continue;
 
+    // Bills criadas antes do backfill de owner_phone (deploy antes do seed)
+    // não têm dono — expira mesmo assim, mas pula a notificação pra não
+    // quebrar o ciclo com sendText(undefined).
+    if (!expired.owner_phone) {
+      console.warn('[scanner] expired bill without owner_phone, skipping notification', { id: expired.id });
+      continue;
+    }
+
     const pending = expired.participants.filter((p) => p.status === 'PENDING');
     const pendingNames = pending.map((p) => p.name).join(', ');
     console.log('[scanner] expired bill', { id: expired.id, description: expired.description });
@@ -118,9 +127,14 @@ export async function scanForBillPayments(): Promise<void> {
 
   console.log(`[scanner] credits returned: ${credits.length}`);
 
+  // Owner key normalizado pra casar com como as bills são indexadas pelo
+  // webhook (que normaliza o número do sender). Sem isso, o número de 13
+  // dígitos do env não bate com as bills do operador (keyed em 12 dígitos).
+  const ownerPhone = normalizeBrNumber(env.userWhatsappNumber);
+
   for (const transaction of credits) {
     if (await processedTransactionsRepository.wasAlreadyProcessed(transaction.id)) continue;
-    const matched = await tryReconcile(transaction, env.userWhatsappNumber);
+    const matched = await tryReconcile(transaction, ownerPhone);
     // Só marca como processada quando bate com uma bill. Transações órfãs
     // (PIX recebido sem bill correspondente) ficam disponíveis pra retentativa
     // — se uma bill nova for criada cobrindo essa tx, o próximo scan reconcilia.

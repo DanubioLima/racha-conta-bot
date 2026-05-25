@@ -28,6 +28,7 @@ const RESPONSE_SCHEMA = {
           },
         },
       },
+      required: ["description", "total_amount", "headcount", "participants"],
     },
     profile: {
       type: Type.OBJECT,

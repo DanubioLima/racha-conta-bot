@@ -2,10 +2,13 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { env } from '../config/env.js';
 import { userRepository } from '../repositories/user.repository.js';
+import { normalizeBrNumber } from '../lib/phone.js';
 import type { Bill } from '../services/bills/bill.types.js';
 
 async function main(): Promise<void> {
-  const phone = env.userWhatsappNumber.replace(/\D/g, '');
+  // Mesma normalização do webhook — o operador precisa ser keyed igual a como
+  // chega quando ele manda mensagem pro bot, senão vira um user duplicado.
+  const phone = normalizeBrNumber(env.userWhatsappNumber);
 
   const existing = await userRepository.findByPhone(phone);
   if (!existing) {
