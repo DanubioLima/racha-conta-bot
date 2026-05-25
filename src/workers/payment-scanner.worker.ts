@@ -2,7 +2,8 @@ import { billRepository } from '../repositories/bill.repository.js';
 import { processedTransactionsRepository } from '../repositories/processed-transactions.repository.js';
 import { tryReconcile } from '../services/bills/bill.service.js';
 import { createLedgerSource } from '../services/ledger/factory.js';
-import { notifyUser } from '../services/whatsapp/whatsapp.js';
+import { sendText } from '../services/whatsapp/whatsapp.js';
+import { env } from '../config/env.js';
 import type { Bill } from '../services/bills/bill.types.js';
 import type { LedgerSource } from '../services/ledger/ledger.source.js';
 
@@ -72,7 +73,8 @@ async function expireBillsOlderThanSevenDays(openBills: Bill[]): Promise<void> {
     const pending = expired.participants.filter((p) => p.status === 'PENDING');
     const pendingNames = pending.map((p) => p.name).join(', ');
     console.log('[scanner] expired bill', { id: expired.id, description: expired.description });
-    await notifyUser(
+    await sendText(
+      env.userWhatsappNumber,
       pending.length > 0
         ? `⏱️ Bill "${expired.description}" expirou após 7 dias. Pendentes: ${pendingNames}.`
         : `⏱️ Bill "${expired.description}" expirou após 7 dias.`,
