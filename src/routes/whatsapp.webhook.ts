@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { env } from "../config/env.js";
-import { extractBillFromText } from "../services/llm/gemini.js";
+import { extractIntent } from "../services/llm/gemini.js";
 import {
   createBillFromExtraction,
   notifyUnknown,
@@ -96,9 +96,9 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
       // doesn't retry on slow LLM calls.
       void (async () => {
         try {
-          const result = await extractBillFromText(text);
-          if (result.intent !== "create_bill" || !result.bill) {
-            console.log("[webhook] intent unknown, notifying user");
+          const result = await extractIntent(text);
+          if (result.intent !== "create_bill") {
+            console.log("[webhook] intent não-create_bill, notificando user");
             await notifyUnknown();
             return;
           }
