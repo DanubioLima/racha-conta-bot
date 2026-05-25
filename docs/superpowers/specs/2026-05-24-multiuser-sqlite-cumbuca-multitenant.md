@@ -231,15 +231,18 @@ Localização: `src/repositories/*.repository.ts`.
 // src/repositories/users.repository.ts
 export interface User {
   phone: string;
+  email: string;
   name: string;
-  pix_key: string;
+  pix_key: string;                  // pode ser '' se ainda não coletado
   pix_merchant_name: string;
   pix_merchant_city: string;
   created_at: string;
 }
+export class EmailAlreadyTakenError extends Error {}
 export const usersRepository = {
   findByPhone(phone: string): User | null,
-  insert(user: User): void,
+  findByEmail(email: string): User | null,
+  insert(user: User): void,            // lança EmailAlreadyTakenError se email já existe pra outro phone
   update(phone: string, partial: Partial<User>): User | null,
   list(): User[],
 };
@@ -309,65 +312,80 @@ do path host `/home/slice/slice-data/` recebe o novo `.db`.
 ```typescript
 type Intent =
   | { intent: 'create_bill'; bill: ExtractedBill }
-  | { intent: 'register_account'; profile: Partial<RegisterProfile> }
-  | { intent: 'link_bank' }   // recovery/manual: user diz "reconectar banco",
-                              // "meu nubank desconectou", etc. NÃO é a porta
-                              // de entrada do bank linking — o bot DRIVES
-                              // o linking proativamente após register.
+  | { intent: 'register_account'; profile: RegisterProfile }
   | { intent: 'unknown' };
 
+// Profile parcial — qualquer subset dos 3 fields. Bot coleta o que faltar.
 interface RegisterProfile {
-  name: string;
-  pix_key: string;
-  // Fields NOT coletados do user — derivados automaticamente pra reduzir
-  // fricção do onboarding:
+  name?: string;
+  email?: string;
+  pix_key?: string;
+  // Fields NÃO coletados — derivados automaticamente:
   //   pix_merchant_name = name (truncado a 25 chars se exceder o limite BR Code)
   //   pix_merchant_city = 'BRASIL' (15 chars, valor genérico aceito por todos os bancos)
-  // Esses defaults aparecem no app do banco do pagador como info do recebedor.
-  // Se virar UX issue (tester reclamar), promove a campos coletados explicitamente.
 }
 ```
 
+**Removido `link_bank` intent.** O bot conduz o link proativamente após
+registro (§6.1). Recovery (banco desconectou) **não é necessário pro MVP**
+— se acontecer raramente em 3 semanas de validação, user fala com Danubio.
+Caso vire pain real depois, é fácil reintroduzir como reativo (dispatcher
+detecta `isConnectedFor === false` no create_bill e re-envia link).
+
 ### 5.2 Prompt do Gemini
 
-Atualizar o system prompt em `src/services/llm/gemini.ts` pra:
-
-- Reconhecer cada um dos intents acima
-- Extrair os fields apropriados
+System prompt em `src/services/llm/prompt.ts` deve:
+- Reconhecer os 3 intents acima
+- Extrair fields apropriados, tolerante a profile parcial e ordem livre
+- Lidar com edge cases comuns sem precisar de retry/clarification
 - Em caso de ambiguidade, retornar `unknown`
 
-Exemplos no prompt (few-shot):
-- "Paguei 60 na pizza, divide com Ana e Beto" → `create_bill`
-- "Oi, sou João, minha chave pix é joao@email.com" → `register_account` com name + pix_key
-- "Sou Maria" (sem PIX) → `register_account` parcial (só name)
-- "Meu nubank desconectou" / "preciso reconectar" / "reconectar banco" → `link_bank` (raro — só recovery)
-- "Bom dia" / mensagem genérica → `unknown`
+**Edge cases que o prompt deve tratar (incluir no few-shot):**
 
-Note: usuário em onboarding **não precisa pedir** pra conectar banco. O
-bot conduz proativamente (ver §6.1). `link_bank` é safety-net pra casos
-em que o user expressa explicitamente que algo deu errado e quer
-re-conectar.
+| Entrada | Output esperado |
+|---|---|
+| "Paguei 60 na pizza, divide com Ana e Beto" | `create_bill` com bill completo |
+| "Sou João Pedro Silva, joao@email.com" | `register_account` `{name: "João Pedro Silva", email: "joao@email.com"}` |
+| "joao@email.com, sou João" | `register_account` mesma coisa (ordem livre) |
+| "Me chamo Maria Fernanda. Email maria@gmail.com" | `register_account` `{name: "Maria Fernanda", email: "maria@gmail.com"}` |
+| "Maria" (só nome, sem email) | `register_account` `{name: "Maria"}` (profile parcial) |
+| "joao@email.com" (só email) | `register_account` `{email: "joao@email.com"}` (profile parcial) |
+| "pix joao@email.com" / "minha chave pix é xxx" | `register_account` `{pix_key: "..."}` (parcial — coletando PIX depois) |
+| "ah desculpa, sou João Silva, joao@x.com" | `register_account` (ignora "ah desculpa") |
+| "Não quero te dizer" | `unknown` |
+| "1234567" / "asdf" / "..." | `unknown` |
+| "Bom dia" / "Oi" / "Tudo bem?" | `unknown` |
+| "Sou Maria, e meu telefone é 5511X" | `register_account` `{name: "Maria"}` (ignora telefone — bot já tem) |
+| "Quero criar uma conta" (sem ter pago nada) | `unknown` (não cria bill sem dados) |
+
+**Importante pro prompt:**
+- **Nomes compostos**: pegar nome COMPLETO até encontrar separador
+  natural (vírgula, "e", ponto, número, email, "pix"). "João Pedro Silva,
+  joao@x.com" → name = "João Pedro Silva" (não "João" só).
+- **Email validation no prompt**: regex simples — algo com `@` e domínio.
+  Se parecer email mal-formado, melhor não extrair (deixar field vazio).
+- **Telefone do user**: NUNCA extrair como field — bot já tem o phone via
+  webhook metadata. Se user mencionar, ignora.
+- **PIX key**: aceita qualquer string após "pix " ou "chave pix" — não
+  valida formato (pode ser email, CPF, telefone, random key).
 
 ### 5.3 Dispatcher no webhook
 
 ```typescript
 // src/routes/whatsapp.webhook.ts pseudo
 const user = usersRepository.findByPhone(senderPhone);
-const intent = await extractIntentFromText(text, { knownUser: !!user });
+const intent = await extractIntent(text);
 
 switch (intent.intent) {
   case 'register_account':
     return userService.handleRegistration(senderPhone, intent.profile);
-  case 'link_bank':
-    if (!user) return userService.requireRegistrationFirst(senderPhone);
-    return cumbucaService.startOAuthForUser(user);
   case 'create_bill':
     if (!user) return userService.requireRegistrationFirst(senderPhone);
-    if (!user.pix_key) return userService.requirePixFirst(senderPhone);
+    if (!user.pix_key) return userService.requirePixFirst(senderPhone, user.name);
     return billService.createBillFromExtraction(intent.bill, user);
   case 'unknown':
   default:
-    return userService.notifyUnknown(senderPhone, !!user);  // texto contextual: se novo, instrui registro; se conhecido, instrui formato de bill
+    return userService.notifyUnknown(senderPhone, !!user);  // texto contextual
 }
 ```
 
@@ -375,35 +393,35 @@ switch (intent.intent) {
 
 ### 6.1 Fluxo conceitual — bot conduzindo proativamente
 
+**Coleta inicial: nome + email apenas.** PIX é coletado lazy (na primeira
+tentativa de criar bill, se faltar). Isso reduz fricção do onboarding —
+user pode não saber a chave PIX de cor mas sabe nome+email.
+
 ```
 User (desconhecido) → "oi"
   ↓
-Bot: "Bem-vindo ao Slice 👋 Pra começar, me responde com:
-       Nome: Seu Nome
-       PIX: sua-chave"
+Bot: "Olá! Sou o Slice 👋 Como já tenho seu número, pode me informar
+      seu nome e email?"
   ↓
-User: "João Silva, joao@email.com"
+User: "Sou João Pedro Silva, joao@email.com"
   ↓
-Gemini → { intent: 'register_account', profile: { name, pix_key } }
+Gemini → { intent: 'register_account', profile: { name: "João Pedro Silva", email: "joao@email.com" } }
   ↓
-userService.persist(user)
+userService.persist({ phone, name, email, pix_key: '' })
   ↓
 Bot envia 2 mensagens em sequência:
   ↓
-  [1] "Tudo certo, João! Já pode criar contas — manda algo tipo
-      'paguei 60 na pizza, divide com Ana e Beto'."
-  ↓
-  [2] "Antes de você começar, falta um passo curto. Pra eu te avisar
-      automaticamente quando alguém te pagar via PIX, preciso conectar
-      com seu banco. Funciona via Open Finance:
-      
+  [1] "Tudo certo, João Pedro! 🎉 Pra eu te avisar automaticamente
+      quando alguém te pagar via PIX, preciso conectar com seu banco.
+      Funciona via Open Finance:
+
       • Você autoriza direto no app do seu banco (~30s)
       • Eu só vejo as entradas (não vejo saídas, saldo, nem nada pessoal)
       • Pode revogar a qualquer momento no app do banco
-      
+
       Toque aqui pra autorizar:
       <authorize_url>
-      
+
       Depois é só voltar pro WhatsApp."
   ↓
 User abre URL → consent no banco → callback Cumbuca → callback Slice
@@ -414,41 +432,78 @@ cumbucaService.handleCallback(state, code):
   ↓
 Bot envia mensagem WhatsApp:
   ↓
-  "Pronto, conectado! 🎉 Agora vou te avisar automaticamente quando
-   seus contatos pagarem. Pode criar sua primeira conta aí."
+  [2] "Pronto, conectado! 🎉 Pra criar sua primeira conta, manda algo
+       tipo 'paguei 60 na pizza, divide com Ana e Beto'."
 ```
 
-**Decisão importante:** o link é mandado no MESMO momento da confirmação
-de cadastro, antes do user pedir. Reduz fricção e capitaliza no momento
-de mais engajamento (user acabou de se cadastrar, ainda focado no bot).
+**Coleta de PIX (lazy, na primeira bill):**
+
+```
+User: "Paguei 60 na pizza, divide com Ana e Beto"
+  ↓
+Dispatcher: user existe, mas pix_key === '' → bloqueia bill, pede PIX
+  ↓
+Bot: "João, antes de criar essa conta, preciso da sua chave PIX (pra
+      gerar os PIX pros seus amigos). Me responde só 'pix sua-chave',
+      ex: 'pix joao@email.com'."
+  ↓
+User: "pix joao@email.com"
+  ↓
+Gemini → { intent: 'register_account', profile: { pix_key: "joao@email.com" } }
+  ↓
+userService.update(phone, { pix_key }) + deriva pix_merchant_name = name
+  ↓
+Bot: "Chave salva. Agora manda a conta de novo (ex: 'paguei 60 na pizza,
+      divide com Ana e Beto')."
+  ↓
+User repete a mensagem original → fluxo normal de create_bill
+```
+
+(MVP: simples — user re-envia. Sofisticação futura: bot memoriza a bill
+pendente e cria automaticamente após PIX salvar. Pequena complexidade
+de estado, não vale pro MVP.)
+
+**Decisões importantes:**
+- Link Cumbuca é mandado IMEDIATAMENTE após o user fornecer nome+email
+  (não após PIX — PIX é lazy)
+- Email é UNIQUE: se outro user tentar usar o mesmo email, dispatcher
+  responde "Esse email já está sendo usado por outra conta. Use outro
+  email."
+- Mensagem inicial do bot menciona "como já tenho seu número" — torna
+  óbvio que telefone não precisa ser informado.
 
 ### 6.2 Edge cases
 
-- **Profile parcial no primeiro registro**: user manda só "Sou João" sem
-  PIX. Bot persiste o nome e pede o PIX especificamente ("Falta só sua
-  chave PIX"). Quando completar, dispara o fluxo de link banco da §6.1.
-- **User ignora o link e cria bill antes de conectar**: bot **não bloqueia**
-  a criação. Manda PIX normalmente e adiciona um lembrete sutil ao final
-  da mensagem inicial: "💡 Pra eu detectar pagamentos automaticamente,
-  conecte seu banco: <authorize_url>". A bill fica OPEN e pode ser
-  fechada manualmente (item futuro de admin commands) ou expira em 7 dias.
-- **User clica no link, autoriza, mas falha o callback** (rede caiu, etc.):
-  na próxima mensagem do user, bot detecta sem tokens persistidos +
-  pending pairing expirado, e re-driva o link: "Algo deu errado no último
-  pareamento. Tenta de novo: <novo_authorize_url>".
-- **User com pending pairing ativo** (clicou link, ainda não voltou): bot
-  reconhece pending não-expirado e responde "Tá esperando você terminar
-  no banco. Volta aqui depois de autorizar." em vez de gerar URL nova.
-- **Tentativa de criar bill sem registro**: bot responde "Pra usar o
-  Slice preciso te cadastrar primeiro. Me responde com Nome: X, PIX: y".
-- **Tentativa de criar bill sem PIX cadastrado**: bot pede PIX antes.
-- **`link_bank` explícito (recovery)**: user diz "reconectar banco" /
-  "meu nubank desconectou" → bot apaga tokens antigos (se houver),
-  dispara nova URL com explicação reduzida ("Reconectando seu banco.
-  Toque aqui: <url>").
-- **Reenvio de PIX numa segunda mensagem**: aceitamos update via
-  `register_account` intent — útil pra correção. ("Minha chave PIX mudou
-  pra X" → update do PIX no profile).
+- **Profile parcial no primeiro registro**:
+  - Só nome (sem email): "Pra continuar preciso do seu email também. Me
+    responde 'email seu@email.com'."
+  - Só email (sem nome): "Pra continuar preciso do seu nome também. Me
+    responde com seu nome."
+  - Bot persiste o que veio, pede o que faltou.
+- **Email já em uso por outro user**: bot detecta via UNIQUE constraint
+  no insert → responde "Esse email já está sendo usado por outra conta.
+  Use outro email." User retenta com email diferente.
+- **User ignora o link Cumbuca e tenta criar bill antes de conectar
+  banco**: bot **não bloqueia** a criação. Cria bill, manda PIX
+  normalmente e adiciona lembrete sutil ao final: "💡 Pra eu detectar
+  pagamentos automaticamente, conecte seu banco: <authorize_url>". Bill
+  fica OPEN; expira em 7 dias se ninguém marcar paga (admin commands
+  fora de escopo).
+- **User clica no link, autoriza, mas falha o callback** (rede caiu,
+  etc.): na próxima mensagem do user, bot detecta sem tokens + pending
+  expirado, e re-driva o link.
+- **User com pending pairing ativo** (clicou link, ainda não voltou):
+  bot reconhece pending não-expirado e responde "Tá esperando você
+  terminar no banco. Volta aqui depois de autorizar." em vez de gerar
+  URL nova.
+- **Tentativa de criar bill sem registro**: bot pede registro primeiro
+  ("Olá! Sou o Slice...").
+- **Tentativa de criar bill com user cadastrado mas sem PIX**: bot pede
+  PIX (ver §6.1 fluxo lazy). User re-envia a bill após.
+- **Reenvio de profile pra correção**: aceitamos update via
+  `register_account` parcial — "Mudei meu email pra X" / "pix novo X"
+  → update no profile. Se o novo email já existe em outro user → mesma
+  resposta de "email em uso".
 
 ### 6.3 Bot não bloqueia bill por banco não conectado
 
@@ -496,9 +551,8 @@ truncar a tabela `cumbuca_app` manualmente.
 Reaproveita o refactor que já está na branch (file-based pending pairing
 → DB-backed pending pairing keyed por user_phone):
 
-1. Bot decide gerar link — proativamente após register (caminho principal,
-   ver §6.1) **OU** quando user emite `intent=link_bank` (caminho de
-   recovery)
+1. Bot decide gerar link — proativamente após user completar registro
+   (nome + email coletados — caminho único, ver §6.1)
 2. `cumbucaService.startOAuthForUser(user)`:
    - `cumbucaAppRepository.get()` ou lazy-bootstrap
    - Gera state random + code_verifier (PKCE)
@@ -506,7 +560,7 @@ Reaproveita o refactor que já está na branch (file-based pending pairing
    - Monta authorize URL com app `client_id`, state, code_challenge,
      redirect_uri `https://bot.appslice.com.br/oauth/cumbuca/callback`
 3. Bot manda URL pro user via WhatsApp envolto na mensagem explicativa
-   (texto completo da §6.1; em caso de recovery, versão curta)
+   (texto completo da §6.1)
 4. User abre URL → consent no banco → callback Cumbuca → callback Slice
 5. Rota `/oauth/cumbuca/callback`:
    - Recebe `code` + `state`
@@ -792,12 +846,19 @@ silenciosa** que destruiria a fase de validação com testers.
 - Code exchange fail → 500, pending NÃO é apagado (user pode retentar)
 
 **F. Auto-registro via intent dispatcher** (`user-registration.test.ts`)
-- Stub do Gemini retorna `register_account` → user persiste com defaults
-  derivados (`pix_merchant_name` = nome, `pix_merchant_city` = 'BRASIL')
-- Profile parcial (só nome) → user persiste, bot prompta PIX faltante
-- Re-registro com mesmo phone → update do profile, não duplicação
-- Após registro completo, bot dispara mensagem proativa de link com URL
-  Cumbuca válida (mock sendText assertable)
+- Stub do Gemini retorna `register_account` `{name, email}` → user
+  persiste; PIX fica vazio
+- Profile parcial (só nome): user NÃO persiste ainda, bot pede email
+- Profile parcial (só email): user NÃO persiste ainda, bot pede nome
+- Email duplicado: insert rejeita com `EmailAlreadyTakenError`,
+  dispatcher responde com erro amigável
+- Após registro completo (nome + email), bot dispara mensagem proativa
+  de link Cumbuca com URL válida
+- Lazy PIX collection: user com PIX vazio tenta `create_bill` → bot
+  bloqueia e pede PIX; segundo `register_account` com pix_key salva e
+  pede pra reenviar a bill
+- Nomes compostos: "João Pedro Silva" não vira "João" (testar via mock
+  retorno do Gemini com name completo)
 
 **G. Migration JSON → SQLite preserva dados e é idempotente** (`migration.test.ts`)
 - Setup com 4 JSONs conhecidos → migration → SQLite tem counts/fields certos
