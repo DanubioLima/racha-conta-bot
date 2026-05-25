@@ -5,7 +5,6 @@ import {
   createBillFromExtraction,
   notifyUnknown,
 } from "../services/bills/bill.service.js";
-import { wasSentByBot } from "../services/whatsapp/whatsapp.js";
 
 // Evolution API MESSAGES_UPSERT payload (only the fields we care about).
 interface EvolutionWebhookBody {
@@ -77,14 +76,8 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
         return reply.code(200).send({ ok: true, ignored: "no-text" });
       }
 
-      // The user messages themselves, so legitimate user-typed messages arrive
-      // with fromMe=true. So do the bot's own outgoing messages, echoed back via
-      // MESSAGES_UPSERT. Filter the echoes by checking the id/text cache.
-      if (body?.data?.key?.fromMe && wasSentByBot(body.data.key.id, text)) {
-        console.log("[webhook] ignored: bot-echo", {
-          messageId: body.data.key.id,
-        });
-        return reply.code(200).send({ ok: true, ignored: "bot-echo" });
+      if (body?.data?.key?.fromMe) {
+        return reply.code(200).send({ ok: true, ignored: "from-me" });
       }
 
       console.log("[webhook] processing user message", {

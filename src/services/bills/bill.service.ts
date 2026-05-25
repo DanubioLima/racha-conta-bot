@@ -1,7 +1,8 @@
 import { ulid } from "ulid";
 import { billRepository } from "../../repositories/bill.repository.js";
 import { buildPixPayload } from "../pix/pix.js";
-import { notifyUser } from "../whatsapp/whatsapp.js";
+import { sendText } from "../whatsapp/whatsapp.js";
+import { env } from "../../config/env.js";
 import { notifyNewBillCreated } from "../../workers/payment-scanner.worker.js";
 import type {
   Bill,
@@ -39,14 +40,15 @@ async function sendBillCreatedMessages(bill: Bill): Promise<void> {
   // o BR Code sem cruft. O QR PNG (`buildPixQrPngBase64`) está dormente em
   // `pix.ts` caso a gente queira voltar a enviar imagem no futuro.
   const names = bill.participants.map((p) => p.name).join(" e ");
-  await notifyUser(
+  await sendText(
+    env.userWhatsappNumber,
     `Anotei sua conta de ${formatBRL(bill.total_amount)} em "${bill.description}". ` +
       `Cabe ${formatBRL(bill.amount_per_person)} pra cada um. ` +
       `Mando o PIX de cada um (${names}) a seguir.`,
   );
 
   for (const participant of bill.participants) {
-    await notifyUser(participant.pix_payload);
+    await sendText(env.userWhatsappNumber, participant.pix_payload);
   }
 }
 
@@ -168,17 +170,18 @@ export async function tryReconcile(tx: IncomingTransaction): Promise<boolean> {
   );
   if (paidParticipant) {
     const msg = renderPaidMessage(updated, paidParticipant);
-    if (msg) await notifyUser(msg);
+    if (msg) await sendText(env.userWhatsappNumber, msg);
   }
   if (updated.status === "CLOSED") {
     console.log("[bill] bill closed", { id: updated.id });
-    await notifyUser(renderClosedMessage(updated));
+    await sendText(env.userWhatsappNumber, renderClosedMessage(updated));
   }
   return true;
 }
 
 export async function notifyUnknown(): Promise<void> {
-  await notifyUser(
+  await sendText(
+    env.userWhatsappNumber,
     'Não consegui entender essa mensagem como uma conta pra dividir. Pode reformular? Ex: "Paguei 60 na pizzaria, dividir com João e Maria, 20 cada."',
   );
 }
