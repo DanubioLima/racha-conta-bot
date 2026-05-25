@@ -671,7 +671,16 @@ Não fazem parte desta migração — capturados separadamente:
 - `src/workers/payment-scanner.worker.ts` — itera users
 - `src/routes/cumbuca.oauth.ts` — callback resolve user via state, faz account selection automática
 - `docker-compose.yml` — bot volume vira bind mount
-- `package.json` — adiciona `better-sqlite3` em deps; adiciona script `migrate:json-to-sqlite`
+- `package.json` — adiciona `better-sqlite3` em deps; adiciona `vitest` em devDeps; scripts `migrate:json-to-sqlite` e `test`
+
+**Adicionados pra testing (ver §13):**
+- `tests/helpers/test-db.ts`
+- `tests/helpers/fake-cumbuca-client.ts`
+- `tests/helpers/fake-gemini.ts`
+- `tests/helpers/fake-whatsapp.ts`
+- `tests/integration/*.test.ts` (7 arquivos)
+- `vitest.config.ts`
+- `.github/workflows/test.yml` (CI básico)
 
 **Removidos:**
 - `src/services/cumbuca/cumbuca.tokens.ts` (substituído por repository)
@@ -713,3 +722,137 @@ preservar com o script).
 **Risco:** OAuth callback de um user mata pending de outro (race).
 **Mitigação:** pending keyed por user_phone (PK), não compartilha.
 State token único por flow correlaciona corretamente.
+
+## 13. Testing strategy
+
+Convenção do projeto vinha sendo **sem testes automatizados** (apenas
+`tsc --noEmit + commit`), trade-off consciente pra velocidade no MVP
+single-user. Com o multi-user refactor — superfície de regressão muito
+maior, especialmente em isolamento de tenant — o trade-off muda:
+**integration tests nos fluxos críticos viram seguro contra regressão
+silenciosa** que destruiria a fase de validação com testers.
+
+### 13.1 Escopo deliberado
+
+**Vamos testar:**
+- Integration tests nos service-boundary com SQLite real (in-memory) +
+  stubs simples pros HTTP externos
+- Foco em fluxos onde regressão seria silenciosa e cara (isolamento de
+  tenant, refresh de token concorrente, callback OAuth de múltiplos users)
+
+**Não vamos testar:**
+- Unit tests de coisas triviais (config parsing, formatBRL, normalize
+  de número) — baixo valor, custo de manutenção
+- E2E contra serviços reais (Cumbuca, Gemini, Meta) — caro,
+  não-determinístico, risco de ban
+- Mocking exagerado que testa "o mock funciona" em vez do comportamento real
+
+### 13.2 Stack
+
+- **Vitest** — rápido, ESM-friendly, zero build extra, syntax familiar
+  (jest-like). Adicionado a `devDependencies`.
+- **SQLite real em `:memory:`** ou arquivo temp (`/tmp/slice-test-xxx.db`)
+  por teste isolado. Sem fakes de DB — SQLite é leve o suficiente pra
+  ser real em teste.
+- **Stubs simples** pros HTTP externos: helpers que substituem as
+  funções de `cumbuca.client.ts`, `gemini.ts`, `whatsapp/cloudapi.client.ts`
+  no test setup. Sem `nock` / `msw` pra começar — over-engineering.
+
+### 13.3 Cenários cobertos (mínimo útil — ~20-30 testes em 7 arquivos)
+
+**A. Bill creation isola owner** (`bill-creation.test.ts`)
+- PIX gerado usa chave do owner, não do env nem de outro user
+- `owner_phone` setado corretamente na bill
+- Headcount + per-person amount corretos com edge cases (1 participante,
+  N participantes incluindo o owner, decimal repetente)
+
+**B. Reconciliation respeita owner isolation** (`reconciliation.test.ts`)
+- Credit que entrou na conta do A só reconcilia bills DO A, nunca do B
+- Match por amount + preferência por nome
+- All-paid → status CLOSED + notification
+- Credit órfão não marca processado (pode retentar)
+
+**C. Scanner pula owners sem tokens Cumbuca** (`scanner-multiuser.test.ts`)
+- Owners com tokens são scaneados em paralelo
+- Owners sem tokens: pulados silenciosamente (não erro)
+- Dedup de processed_transactions é per-user (mesmo tx_id em users
+  diferentes não conflita — porém improvável no real)
+
+**D. Token refresh per-user com lock** (`token-refresh.test.ts`)
+- Dois calls concorrentes pro user A → uma única HTTP request,
+  ambos recebem mesmo token
+- Calls concorrentes pra A e B → duas HTTP requests paralelas, sem
+  bloqueio mútuo
+- Refresh fail → marca disconnected, próximo call respeita
+
+**E. OAuth callback identifica user via state** (`oauth-callback.test.ts`)
+- Two users com pending simultâneo: callback do A não bagunça pending do B
+- State desconhecido → 401, nenhum user mexido
+- Pending expirado (>10min) → 410 + cleanup do pending
+- Code exchange fail → 500, pending NÃO é apagado (user pode retentar)
+
+**F. Auto-registro via intent dispatcher** (`user-registration.test.ts`)
+- Stub do Gemini retorna `register_account` → user persiste com defaults
+  derivados (`pix_merchant_name` = nome, `pix_merchant_city` = 'BRASIL')
+- Profile parcial (só nome) → user persiste, bot prompta PIX faltante
+- Re-registro com mesmo phone → update do profile, não duplicação
+- Após registro completo, bot dispara mensagem proativa de link com URL
+  Cumbuca válida (mock sendText assertable)
+
+**G. Migration JSON → SQLite preserva dados e é idempotente** (`migration.test.ts`)
+- Setup com 4 JSONs conhecidos → migration → SQLite tem counts/fields certos
+- Re-run da migration → nada duplica, counts iguais
+- JSONs antigos movidos pra `.json-archive/`, paths corretos
+
+### 13.4 Estrutura de arquivos
+
+```
+tests/
+  helpers/
+    test-db.ts             # cria :memory: DB com schema + applyMigrations()
+    fake-cumbuca-client.ts # versão de cumbuca.client.ts pra teste
+    fake-gemini.ts         # extractIntent stub controlável
+    fake-whatsapp.ts       # sendText/sendTemplate stubs com assertion helpers
+  integration/
+    bill-creation.test.ts
+    reconciliation.test.ts
+    scanner-multiuser.test.ts
+    token-refresh.test.ts
+    oauth-callback.test.ts
+    user-registration.test.ts
+    migration.test.ts
+vitest.config.ts
+```
+
+### 13.5 Workflow durante desenvolvimento
+
+Convenção revista pro epic multi-user:
+- Implementa repository → escreve 1-2 testes do repo
+- Implementa service usando repo → escreve 2-3 testes do flow
+- `npx tsc --noEmit && npm test` (ambos limpos) → commit
+
+Pra tasks de infra/config (Docker, env vars) testes não se aplicam —
+mantém `tsc + commit`.
+
+### 13.6 CI
+
+GitHub Actions workflow simples rodando `npm ci && npm test` em todo
+push. Bloqueia auto-deploy do Dokploy via webhook? Não bloqueia —
+Dokploy continua deployando em main. CI é sinal verde/vermelho, não
+gate. Quando virar bloqueante (pós-validação 🟢), promove a required
+check.
+
+### 13.7 Que regressão isso pega
+
+Casos reais que esses testes capturariam antes de chegar em testers:
+- Esqueci de filtrar `owner_phone` numa query do scanner → testes C/B
+  pegam
+- Trocar `env.pixKey` por `user.pix_key` mas esquecer de propagar pro
+  generator do PIX → teste A pega
+- Refresh token concorrente sem lock vaza credenciais inválidas pro
+  segundo caller → teste D pega
+- Bug de regex no normalize-number → não pega (mas o impacto é
+  pequeno; já validado manualmente)
+
+O nível de cobertura é "smoke automatizado", não "exhaustive QA".
+Suficiente pro estágio.
