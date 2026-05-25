@@ -8,6 +8,7 @@ import {
   notifyUnknown,
 } from "../services/users/user.service.js";
 import { userRepository } from "../repositories/user.repository.js";
+import { normalizeBrNumber } from "../lib/phone.js";
 
 interface EvolutionWebhookBody {
   event?: string;
@@ -20,16 +21,6 @@ interface EvolutionWebhookBody {
 function extractText(body: EvolutionWebhookBody): string | null {
   const msg = body?.data?.message;
   return msg?.conversation ?? msg?.extendedTextMessage?.text ?? null;
-}
-
-// Brazilian "nono dígito": normaliza 13→12 dígitos pra a chave do user ficar
-// estável entre variações de número.
-function normalizeBrNumber(num: string): string {
-  const digits = num.replace(/\D/g, "");
-  if (digits.length === 13 && digits.startsWith("55") && digits[4] === "9") {
-    return digits.slice(0, 4) + digits.slice(5);
-  }
-  return digits;
 }
 
 function extractSender(body: EvolutionWebhookBody): string | null {
@@ -66,16 +57,20 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
         const result = await extractIntent(text);
         switch (result.intent) {
           case "register_account":
+            // O schema do Gemini não garante o objeto do payload — se vier
+            // ausente, trata como mensagem não entendida em vez de quebrar.
+            if (!result.profile) { await notifyUnknown(senderPhone, !!user); break; }
             await handleRegistration(senderPhone, result.profile);
             break;
           case "create_bill":
+            if (!result.bill) { await notifyUnknown(senderPhone, !!user); break; }
             if (!user) { await requireRegistrationFirst(senderPhone); break; }
             if (!user.pix_key) { await requirePixFirst(senderPhone, user.name); break; }
             await createBillFromExtraction(result.bill, user);
             break;
           case "mark_paid":
             if (!user) { await requireRegistrationFirst(senderPhone); break; }
-            await markPaid(senderPhone, result.payment);
+            await markPaid(senderPhone, result.payment ?? {});
             break;
           default:
             await notifyUnknown(senderPhone, !!user);

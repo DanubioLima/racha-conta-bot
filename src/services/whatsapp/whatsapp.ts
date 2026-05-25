@@ -9,9 +9,15 @@ const client = axios.create({
   timeout: 10_000,
 });
 
+// O PIX copia-e-cola (BR Code) embute a chave PIX + dados do recebedor — nunca
+// vai pro log. Mensagens normais logam um preview curto pra debug.
+function logPreview(text: string): string {
+  if (/br\.gov\.bcb\.pix/i.test(text)) return '[pix payload redacted]';
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
 export async function sendText(to: string, text: string): Promise<void> {
-  const preview = text.length > 80 ? `${text.slice(0, 80)}…` : text;
-  console.log('[whatsapp] sendText →', { to, preview });
+  console.log('[whatsapp] sendText →', { to, preview: logPreview(text) });
   try {
     const res = await client.post(`/message/sendText/${env.evolutionInstance}`, { number: to, text });
     console.log('[whatsapp] sendText ok', { id: res.data?.key?.id });
