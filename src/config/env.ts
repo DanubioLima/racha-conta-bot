@@ -34,6 +34,5 @@ export const env = {
   pixKey: process.env.PIX_KEY!,
   pixMerchantName: process.env.PIX_MERCHANT_NAME!,
   pixMerchantCity: process.env.PIX_MERCHANT_CITY!,
-  workerIntervalMs: Number(process.env.WORKER_INTERVAL_MS ?? 30000),
   ledgerSource: ledgerSourceRaw as 'cumbuca' | 'mock',
 };

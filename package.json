@@ -10,7 +10,8 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "cumbuca:link": "tsx src/bin/cumbuca-link.ts"
+    "cumbuca:link": "tsx src/bin/cumbuca-link.ts",
+    "seed:danubio": "tsx src/bin/seed-danubio-user.ts"
   },
   "dependencies": {
     "@google/genai": "^2.3.0",
