@@ -158,9 +158,12 @@ CREATE TABLE IF NOT EXISTS cumbuca_app (
 
 CREATE TABLE IF NOT EXISTS users (
   phone TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
   data TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
 CREATE TABLE IF NOT EXISTS cumbuca_tokens (
   user_phone TEXT PRIMARY KEY REFERENCES users(phone),
@@ -345,38 +348,86 @@ import { getDb } from './sqlite.js';
 
 export interface User {
   phone: string;
+  email: string;
   name: string;
-  pix_key: string;
-  pix_merchant_name: string;
-  pix_merchant_city: string;
+  pix_key: string;                  // pode ser '' inicialmente; coletado lazy
+  pix_merchant_name: string;        // derivado do name; '' até PIX ser coletado
+  pix_merchant_city: string;        // 'BRASIL' default
   created_at: string;
+}
+
+export class EmailAlreadyTakenError extends Error {
+  constructor(email: string) {
+    super(`Email ${email} already taken by another user`);
+    this.name = 'EmailAlreadyTakenError';
+  }
 }
 
 interface UserRow {
   phone: string;
+  email: string;
+  name: string;
   data: string;
   updated_at: string;
 }
 
 function rowToUser(row: UserRow): User {
-  const parsed = JSON.parse(row.data) as Omit<User, 'phone'>;
-  return { phone: row.phone, ...parsed };
+  const parsed = JSON.parse(row.data) as {
+    pix_key: string;
+    pix_merchant_name: string;
+    pix_merchant_city: string;
+    created_at: string;
+  };
+  return {
+    phone: row.phone,
+    email: row.email,
+    name: row.name,
+    pix_key: parsed.pix_key,
+    pix_merchant_name: parsed.pix_merchant_name,
+    pix_merchant_city: parsed.pix_merchant_city,
+    created_at: parsed.created_at,
+  };
 }
 
 export const usersRepository = {
   findByPhone(phone: string): User | null {
     const row = getDb()
-      .prepare('SELECT phone, data, updated_at FROM users WHERE phone = ?')
+      .prepare('SELECT phone, email, name, data, updated_at FROM users WHERE phone = ?')
       .get(phone) as UserRow | undefined;
+    return row ? rowToUser(row) : null;
+  },
+
+  findByEmail(email: string): User | null {
+    const row = getDb()
+      .prepare('SELECT phone, email, name, data, updated_at FROM users WHERE email = ?')
+      .get(email) as UserRow | undefined;
     return row ? rowToUser(row) : null;
   },
 
   insert(user: User): void {
     const now = new Date().toISOString();
-    const { phone, ...rest } = user;
-    getDb()
-      .prepare('INSERT INTO users (phone, data, updated_at) VALUES (?, ?, ?)')
-      .run(phone, JSON.stringify(rest), now);
+    try {
+      getDb()
+        .prepare('INSERT INTO users (phone, email, name, data, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .run(
+          user.phone,
+          user.email,
+          user.name,
+          JSON.stringify({
+            pix_key: user.pix_key,
+            pix_merchant_name: user.pix_merchant_name,
+            pix_merchant_city: user.pix_merchant_city,
+            created_at: user.created_at,
+          }),
+          now
+        );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('UNIQUE constraint failed: users.email')) {
+        throw new EmailAlreadyTakenError(user.email);
+      }
+      throw err;
+    }
   },
 
   update(phone: string, partial: Partial<Omit<User, 'phone' | 'created_at'>>): User | null {
@@ -384,16 +435,36 @@ export const usersRepository = {
     if (!existing) return null;
     const updated: User = { ...existing, ...partial };
     const now = new Date().toISOString();
-    const { phone: _, ...rest } = updated;
-    getDb()
-      .prepare('UPDATE users SET data = ?, updated_at = ? WHERE phone = ?')
-      .run(JSON.stringify(rest), now, phone);
+    try {
+      getDb()
+        .prepare(
+          'UPDATE users SET email = ?, name = ?, data = ?, updated_at = ? WHERE phone = ?'
+        )
+        .run(
+          updated.email,
+          updated.name,
+          JSON.stringify({
+            pix_key: updated.pix_key,
+            pix_merchant_name: updated.pix_merchant_name,
+            pix_merchant_city: updated.pix_merchant_city,
+            created_at: updated.created_at,
+          }),
+          now,
+          phone
+        );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('UNIQUE constraint failed: users.email')) {
+        throw new EmailAlreadyTakenError(updated.email);
+      }
+      throw err;
+    }
     return updated;
   },
 
   list(): User[] {
     const rows = getDb()
-      .prepare('SELECT phone, data, updated_at FROM users ORDER BY created_at')
+      .prepare('SELECT phone, email, name, data, updated_at FROM users ORDER BY updated_at')
       .all() as UserRow[];
     return rows.map(rowToUser);
   },
@@ -476,10 +547,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createTestDb } from '../helpers/test-db.js';
 import { usersRepository } from '../../src/repositories/users.repository.js';
 
+import { EmailAlreadyTakenError } from '../../src/repositories/users.repository.js';
+
 const sampleUser = {
   phone: '5588998082034',
+  email: 'danubio@email.com',
   name: 'Danubio',
-  pix_key: 'danubio@email.com',
+  pix_key: 'danubio@pix.com',
   pix_merchant_name: 'Danubio',
   pix_merchant_city: 'BRASIL',
   created_at: '2026-05-24T00:00:00.000Z',
@@ -496,8 +570,25 @@ describe('usersRepository', () => {
     expect(found).toEqual(sampleUser);
   });
 
+  it('findByEmail retorna user igual', () => {
+    usersRepository.insert(sampleUser);
+    const found = usersRepository.findByEmail('danubio@email.com');
+    expect(found?.phone).toBe('5588998082034');
+  });
+
   it('findByPhone retorna null pra user inexistente', () => {
     expect(usersRepository.findByPhone('inexistente')).toBeNull();
+  });
+
+  it('findByEmail retorna null pra email inexistente', () => {
+    expect(usersRepository.findByEmail('none@x.com')).toBeNull();
+  });
+
+  it('insert com email duplicado lança EmailAlreadyTakenError', () => {
+    usersRepository.insert(sampleUser);
+    expect(() =>
+      usersRepository.insert({ ...sampleUser, phone: '5511999999999', name: 'Outro' })
+    ).toThrow(EmailAlreadyTakenError);
   });
 
   it('update merge campos parciais e preserva os outros', () => {
@@ -505,7 +596,28 @@ describe('usersRepository', () => {
     const updated = usersRepository.update('5588998082034', { pix_key: 'novo@pix.com' });
     expect(updated?.pix_key).toBe('novo@pix.com');
     expect(updated?.name).toBe('Danubio');
+    expect(updated?.email).toBe('danubio@email.com');
     expect(updated?.created_at).toBe(sampleUser.created_at);
+  });
+
+  it('update pro mesmo email não viola UNIQUE (próprio user)', () => {
+    usersRepository.insert(sampleUser);
+    expect(() =>
+      usersRepository.update('5588998082034', { email: 'danubio@email.com', name: 'Novo Nome' })
+    ).not.toThrow();
+  });
+
+  it('update com email já usado por outro user lança EmailAlreadyTakenError', () => {
+    usersRepository.insert(sampleUser);
+    usersRepository.insert({
+      ...sampleUser,
+      phone: '5511999999999',
+      email: 'outro@email.com',
+      name: 'Outro',
+    });
+    expect(() =>
+      usersRepository.update('5511999999999', { email: 'danubio@email.com' })
+    ).toThrow(EmailAlreadyTakenError);
   });
 
   it('update retorna null se user não existir', () => {
@@ -514,7 +626,12 @@ describe('usersRepository', () => {
 
   it('list retorna todos os users', () => {
     usersRepository.insert(sampleUser);
-    usersRepository.insert({ ...sampleUser, phone: '5511999999999', name: 'Outro' });
+    usersRepository.insert({
+      ...sampleUser,
+      phone: '5511999999999',
+      email: 'outro@email.com',
+      name: 'Outro',
+    });
     expect(usersRepository.list()).toHaveLength(2);
   });
 });
@@ -532,6 +649,7 @@ import type { Bill } from '../../src/services/bills/bill.types.js';
 function userFixture(phone: string) {
   return {
     phone,
+    email: `${phone}@email.com`,
     name: 'Test',
     pix_key: `${phone}@pix`,
     pix_merchant_name: 'Test',
@@ -818,6 +936,7 @@ import { cumbucaPendingPairingRepository } from '../../src/repositories/cumbuca-
 function userFixture(phone: string) {
   return {
     phone,
+    email: `${phone}@email.com`,
     name: 'Test',
     pix_key: `${phone}@pix`,
     pix_merchant_name: 'Test',
@@ -1053,6 +1172,7 @@ import { whatsappWindowRepository } from '../../src/repositories/whatsapp-window
 function userFixture(phone: string) {
   return {
     phone,
+    email: `${phone}@email.com`,
     name: 'Test',
     pix_key: `${phone}@pix`,
     pix_merchant_name: 'Test',
@@ -1177,12 +1297,14 @@ async function main(): Promise<void> {
   applySchema(getDb());
 
   const defaultUserPhone = env.userWhatsappNumber;
+  const defaultUserEmail = process.env.DEFAULT_USER_EMAIL ?? 'danubiovieiralima@gmail.com';
 
   // 1. Garantir que o owner user existe (vem do .env)
   if (!usersRepository.findByPhone(defaultUserPhone)) {
-    console.log(`[migrate] creating default user ${defaultUserPhone}`);
+    console.log(`[migrate] creating default user ${defaultUserPhone} (${defaultUserEmail})`);
     usersRepository.insert({
       phone: defaultUserPhone,
+      email: defaultUserEmail,
       name: env.pixMerchantName,
       pix_key: env.pixKey,
       pix_merchant_name: env.pixMerchantName,
@@ -1421,13 +1543,15 @@ import type { ExtractedBill } from '../bills/bill.types.js';
 
 export interface RegisterProfile {
   name?: string;
+  email?: string;
   pix_key?: string;
+  // pix_merchant_name + pix_merchant_city derivados automaticamente.
+  // Telefone do user NÃO faz parte — bot já tem via webhook metadata.
 }
 
 export type Intent =
   | { intent: 'create_bill'; bill: ExtractedBill }
   | { intent: 'register_account'; profile: RegisterProfile }
-  | { intent: 'link_bank' }
   | { intent: 'unknown' };
 ```
 
@@ -1456,7 +1580,7 @@ const RESPONSE_SCHEMA = {
   properties: {
     intent: {
       type: Type.STRING,
-      enum: ['create_bill', 'register_account', 'link_bank', 'unknown'],
+      enum: ['create_bill', 'register_account', 'unknown'],
     },
     bill: {
       type: Type.OBJECT,
@@ -1481,6 +1605,7 @@ const RESPONSE_SCHEMA = {
       type: Type.OBJECT,
       properties: {
         name: { type: Type.STRING },
+        email: { type: Type.STRING },
         pix_key: { type: Type.STRING },
       },
     },
@@ -1514,8 +1639,6 @@ export async function extractIntent(text: string): Promise<Intent> {
         return { intent: 'unknown' };
       case 'register_account':
         return { intent: 'register_account', profile: (parsed.profile as never) ?? {} };
-      case 'link_bank':
-        return { intent: 'link_bank' };
       default:
         return { intent: 'unknown' };
     }
@@ -1534,31 +1657,78 @@ Adicionar à seção de exemplos do prompt:
 export const SYSTEM_INSTRUCTION = `
 Você é o classificador de intenções do Slice, um bot de divisão de contas via WhatsApp.
 
-Classifique cada mensagem em UMA das intents abaixo:
+Classifique cada mensagem em UMA das 3 intents:
 
 1. **create_bill**: usuário descreve uma conta que pagou e quer dividir.
-   Exemplo: "Paguei 60 na pizza, divide com Ana e Beto"
    Saída: { intent: 'create_bill', bill: { description, total_amount, headcount, participants[{name, amount_due}] } }
+   Exemplo: "Paguei 60 na pizza, divide com Ana e Beto"
 
 2. **register_account**: usuário está se cadastrando/identificando.
-   Sinaliza: "Sou X", "Meu nome é X", "minha chave pix é Y", etc.
-   Pode vir parcial (só nome, sem PIX, ou vice-versa).
-   Exemplo: "Sou João, minha chave pix é joao@email.com"
-   Saída: { intent: 'register_account', profile: { name, pix_key } }
+   Pode vir COMPLETO (nome + email + pix) ou PARCIAL (qualquer subset).
+   Saída: { intent: 'register_account', profile: { name?, email?, pix_key? } }
 
-3. **link_bank**: usuário pede pra (re)conectar o banco. RECOVERY ONLY.
-   Sinaliza: "reconectar banco", "meu nubank desconectou", "me conecta de novo".
-   Exemplo: "Meu nubank desconectou, me reconecta"
-   Saída: { intent: 'link_bank' }
-   IMPORTANTE: NÃO inferir link_bank de mensagens neutras como "oi" ou
-   "comecar". O bot dispara o link proativamente após registro — o user
-   não precisa pedir.
+3. **unknown**: saudação, pergunta genérica, mensagem ambígua ou fora de
+   escopo. Em caso de dúvida, PREFIRA unknown — o bot re-pergunta.
+   Saída: { intent: 'unknown' }
 
-4. **unknown**: qualquer outra coisa (saudação, pergunta genérica,
-   mensagem ambígua, fora de escopo).
-   Exemplo: "Bom dia" → { intent: 'unknown' }
+REGRAS IMPORTANTES:
 
-Em caso de dúvida, prefira 'unknown' — o bot re-pergunta.
+- **Nomes compostos**: extrair nome COMPLETO até um separador natural
+  (vírgula, "e", ponto, número, email, "pix", "telefone"). Ex: "Sou João
+  Pedro Silva, joao@x.com" → name = "João Pedro Silva" (não só "João").
+
+- **Email**: validar minimamente — string com '@' e domínio (algo.algo).
+  Se parecer email mal-formado, NÃO extrair (deixar field vazio em vez
+  de chutar).
+
+- **Telefone do user**: NUNCA extrair como field. O bot já tem o telefone
+  via metadata do WhatsApp. Se user mencionar "meu telefone é X",
+  ignorar.
+
+- **PIX key**: aceitar qualquer string após "pix " / "minha pix é " /
+  "chave pix". NÃO validar formato (pode ser email, CPF, telefone, ou
+  random key alphanumeric).
+
+- **Order-invariant**: o usuário pode mandar campos em qualquer ordem ou
+  com palavras de descarte ("ah desculpa, ", "olha só, "). Extrair sempre
+  os fields presentes; ignorar o resto.
+
+- **Mensagem vazia ou nonsense**: unknown.
+
+EXEMPLOS:
+
+"Paguei 60 na pizza, divide com Ana e Beto"
+→ { intent: 'create_bill', bill: {...} }
+
+"Sou João Pedro Silva, joao@email.com"
+→ { intent: 'register_account', profile: { name: "João Pedro Silva", email: "joao@email.com" } }
+
+"joao@email.com, sou João"
+→ { intent: 'register_account', profile: { name: "João", email: "joao@email.com" } }
+
+"Me chamo Maria Fernanda. Email maria@gmail.com"
+→ { intent: 'register_account', profile: { name: "Maria Fernanda", email: "maria@gmail.com" } }
+
+"Maria"
+→ { intent: 'register_account', profile: { name: "Maria" } }
+
+"joao@email.com"
+→ { intent: 'register_account', profile: { email: "joao@email.com" } }
+
+"pix joao@email.com" ou "minha chave pix é joao@email.com"
+→ { intent: 'register_account', profile: { pix_key: "joao@email.com" } }
+
+"ah desculpa, sou João Silva, joao@x.com"
+→ { intent: 'register_account', profile: { name: "João Silva", email: "joao@x.com" } }
+
+"Sou Maria, meu telefone é 5511X"
+→ { intent: 'register_account', profile: { name: "Maria" } }   (ignora telefone)
+
+"Não quero te dizer" / "1234567" / "asdf" / "Bom dia" / "Oi"
+→ { intent: 'unknown' }
+
+"Quero criar uma conta" (sem dados de pagamento)
+→ { intent: 'unknown' }   (não dá pra criar bill sem dados)
 `;
 ```
 
@@ -1631,7 +1801,23 @@ describe('extractIntent', () => {
     }
   });
 
-  it('parses register_account com profile parcial', async () => {
+  it('parses register_account com profile completo (name + email)', async () => {
+    setGeminiResponse(
+      JSON.stringify({
+        intent: 'register_account',
+        profile: { name: 'João Pedro Silva', email: 'joao@email.com' },
+      })
+    );
+    const { extractIntent } = await import('../../src/services/llm/gemini.js');
+    const result = await extractIntent('Sou João Pedro Silva, joao@email.com');
+    expect(result.intent).toBe('register_account');
+    if (result.intent === 'register_account') {
+      expect(result.profile.name).toBe('João Pedro Silva');
+      expect(result.profile.email).toBe('joao@email.com');
+    }
+  });
+
+  it('parses register_account com profile parcial (só nome)', async () => {
     setGeminiResponse(
       JSON.stringify({ intent: 'register_account', profile: { name: 'João' } })
     );
@@ -1640,15 +1826,22 @@ describe('extractIntent', () => {
     expect(result.intent).toBe('register_account');
     if (result.intent === 'register_account') {
       expect(result.profile.name).toBe('João');
+      expect(result.profile.email).toBeUndefined();
       expect(result.profile.pix_key).toBeUndefined();
     }
   });
 
-  it('parses link_bank', async () => {
-    setGeminiResponse(JSON.stringify({ intent: 'link_bank' }));
+  it('parses register_account com só pix_key (lazy collection)', async () => {
+    setGeminiResponse(
+      JSON.stringify({ intent: 'register_account', profile: { pix_key: 'joao@email.com' } })
+    );
     const { extractIntent } = await import('../../src/services/llm/gemini.js');
-    const result = await extractIntent('reconectar nubank');
-    expect(result.intent).toBe('link_bank');
+    const result = await extractIntent('pix joao@email.com');
+    expect(result.intent).toBe('register_account');
+    if (result.intent === 'register_account') {
+      expect(result.profile.pix_key).toBe('joao@email.com');
+      expect(result.profile.name).toBeUndefined();
+    }
   });
 
   it('fallback pra unknown em parsing failure', async () => {
@@ -1722,7 +1915,7 @@ export function clearSentMessages(): void {
 - [ ] **Step 2: Criar `src/services/users/user.service.ts`**
 
 ```typescript
-import { usersRepository, type User } from '../../repositories/users.repository.js';
+import { usersRepository, EmailAlreadyTakenError, type User } from '../../repositories/users.repository.js';
 import { notifyUser } from '../whatsapp/whatsapp.js';
 import { startOAuthForUser } from '../cumbuca/cumbuca.client.js';
 import type { RegisterProfile } from '../llm/intent.types.js';
@@ -1733,28 +1926,55 @@ function deriveMerchantName(name: string): string {
 
 const DEFAULT_MERCHANT_CITY = 'BRASIL';
 
+const WELCOME_INITIAL = `Olá! Sou o Slice 👋 Como já tenho seu número, pode me informar seu nome e email?`;
+
+function welcomeAndLinkBankText(name: string, authorizeUrl: string): string {
+  return `Tudo certo, ${name}! 🎉 Pra eu te avisar automaticamente quando alguém te pagar via PIX, preciso conectar com seu banco. Funciona via Open Finance:
+
+• Você autoriza direto no app do seu banco (~30s)
+• Eu só vejo as entradas (não vejo saídas, saldo, nem nada pessoal)
+• Pode revogar a qualquer momento no app do banco
+
+Toque aqui pra autorizar:
+${authorizeUrl}
+
+Depois é só voltar pro WhatsApp.`;
+}
+
 export const userService = {
   async handleRegistration(senderPhone: string, profile: RegisterProfile): Promise<void> {
     const existing = usersRepository.findByPhone(senderPhone);
 
     if (!existing) {
-      // Registro inicial — exige pelo menos nome
-      if (!profile.name) {
-        await notifyUser(senderPhone, 'Pra te cadastrar preciso do seu nome e sua chave PIX. Manda algo tipo "Sou João, pix joao@email.com".');
+      // Registro inicial — exige nome + email
+      if (!profile.name || !profile.email) {
+        const missing = [];
+        if (!profile.name) missing.push('seu nome');
+        if (!profile.email) missing.push('seu email');
+        await notifyUser(
+          senderPhone,
+          `Pra continuar preciso ${missing.join(' e ')}. Me responde com tudo junto, tipo "Sou João Silva, joao@email.com".`
+        );
         return;
       }
+
       const newUser: User = {
         phone: senderPhone,
+        email: profile.email,
         name: profile.name,
         pix_key: profile.pix_key ?? '',
-        pix_merchant_name: deriveMerchantName(profile.name),
-        pix_merchant_city: DEFAULT_MERCHANT_CITY,
+        pix_merchant_name: profile.pix_key ? deriveMerchantName(profile.name) : '',
+        pix_merchant_city: profile.pix_key ? DEFAULT_MERCHANT_CITY : '',
         created_at: new Date().toISOString(),
       };
-      usersRepository.insert(newUser);
-      if (!newUser.pix_key) {
-        await notifyUser(senderPhone, `Beleza ${profile.name}! Falta só sua chave PIX. Me responde algo tipo "pix joao@email.com".`);
-        return;
+      try {
+        usersRepository.insert(newUser);
+      } catch (err) {
+        if (err instanceof EmailAlreadyTakenError) {
+          await notifyUser(senderPhone, 'Esse email já está sendo usado por outra conta. Use outro email.');
+          return;
+        }
+        throw err;
       }
       await this.sendWelcomeWithLinkBank(newUser);
       return;
@@ -1764,63 +1984,70 @@ export const userService = {
     const updated: Partial<User> = {};
     if (profile.name && profile.name !== existing.name) {
       updated.name = profile.name;
-      updated.pix_merchant_name = deriveMerchantName(profile.name);
+      if (existing.pix_key) updated.pix_merchant_name = deriveMerchantName(profile.name);
+    }
+    if (profile.email && profile.email !== existing.email) {
+      updated.email = profile.email;
     }
     if (profile.pix_key && profile.pix_key !== existing.pix_key) {
       updated.pix_key = profile.pix_key;
+      // Quando PIX é coletado pela primeira vez (lazy), deriva merchant_name e city
+      updated.pix_merchant_name = deriveMerchantName(profile.name ?? existing.name);
+      updated.pix_merchant_city = DEFAULT_MERCHANT_CITY;
     }
-    if (Object.keys(updated).length > 0) {
+
+    if (Object.keys(updated).length === 0) return;
+
+    try {
       const after = usersRepository.update(senderPhone, updated);
-      if (after && !existing.pix_key && after.pix_key) {
-        // Completou cadastro agora — manda welcome com link
-        await this.sendWelcomeWithLinkBank(after);
+      if (!after) return;
+      if (!existing.pix_key && after.pix_key) {
+        // PIX coletado pela primeira vez (lazy collection após bill bloqueada)
+        await notifyUser(
+          senderPhone,
+          `Chave salva. Agora manda a conta de novo (ex: "paguei 60 na pizza, divide com Ana e Beto").`
+        );
       } else {
         await notifyUser(senderPhone, 'Atualizado!');
       }
+    } catch (err) {
+      if (err instanceof EmailAlreadyTakenError) {
+        await notifyUser(senderPhone, 'Esse email já está sendo usado por outra conta. Use outro email.');
+        return;
+      }
+      throw err;
     }
   },
 
+  async sendInitialWelcome(senderPhone: string): Promise<void> {
+    await notifyUser(senderPhone, WELCOME_INITIAL);
+  },
+
   async sendWelcomeWithLinkBank(user: User): Promise<void> {
-    await notifyUser(
-      user.phone,
-      `Tudo certo, ${user.name}! Já pode criar contas — manda algo tipo "paguei 60 na pizza, divide com Ana e Beto".`
-    );
-
     const authorizeUrl = await startOAuthForUser(user);
-    await notifyUser(
-      user.phone,
-      `Antes de você começar, falta um passo curto. Pra eu te avisar automaticamente quando alguém te pagar via PIX, preciso conectar com seu banco. Funciona via Open Finance:
-
-• Você autoriza direto no app do seu banco (~30s)
-• Eu só vejo as entradas (não vejo saídas, saldo, nem nada pessoal)
-• Pode revogar a qualquer momento no app do banco
-
-Toque aqui pra autorizar:
-${authorizeUrl}
-
-Depois é só voltar pro WhatsApp.`
-    );
+    await notifyUser(user.phone, welcomeAndLinkBankText(user.name, authorizeUrl));
   },
 
   async requireRegistrationFirst(senderPhone: string): Promise<void> {
-    await notifyUser(
-      senderPhone,
-      'Pra usar o Slice preciso te cadastrar primeiro. Me responde com seu nome e chave PIX, tipo "Sou João, pix joao@email.com".'
-    );
+    await notifyUser(senderPhone, WELCOME_INITIAL);
   },
 
   async requirePixFirst(senderPhone: string, name: string): Promise<void> {
     await notifyUser(
       senderPhone,
-      `${name}, falta sua chave PIX. Manda "pix sua-chave" pra completar o cadastro.`
+      `${name}, antes de criar essa conta preciso da sua chave PIX (pra gerar os PIX dos seus amigos). Me responde só "pix sua-chave", tipo "pix joao@email.com".`
     );
   },
 
   async notifyUnknown(senderPhone: string, isRegistered: boolean): Promise<void> {
-    const text = isRegistered
-      ? 'Não consegui entender. Pra dividir uma conta, manda algo tipo "paguei 60 na pizza, divide com Ana e Beto".'
-      : 'Pra começar a usar o Slice, me responde com seu nome e chave PIX. Tipo "Sou João, pix joao@email.com".';
-    await notifyUser(senderPhone, text);
+    if (isRegistered) {
+      await notifyUser(
+        senderPhone,
+        'Não consegui entender. Pra dividir uma conta, manda algo tipo "paguei 60 na pizza, divide com Ana e Beto".'
+      );
+    } else {
+      await this.sendInitialWelcome(senderPhone);
+    }
   },
 };
 ```
@@ -1848,54 +2075,92 @@ describe('userService.handleRegistration', () => {
     clearSentMessages();
   });
 
-  it('cria user com defaults derivados (merchant_name from name, city BRASIL)', async () => {
+  it('profile completo (name + email): persiste user + dispara welcome com link bank proativo', async () => {
     await userService.handleRegistration('5511999999999', {
-      name: 'João Silva',
-      pix_key: 'joao@email.com',
+      name: 'João Pedro Silva',
+      email: 'joao@email.com',
     });
     const user = usersRepository.findByPhone('5511999999999');
-    expect(user?.name).toBe('João Silva');
-    expect(user?.pix_key).toBe('joao@email.com');
-    expect(user?.pix_merchant_name).toBe('João Silva');
-    expect(user?.pix_merchant_city).toBe('BRASIL');
-  });
-
-  it('profile parcial (só nome): persiste user, pede PIX', async () => {
-    await userService.handleRegistration('5511999999999', { name: 'João' });
-    const user = usersRepository.findByPhone('5511999999999');
-    expect(user?.pix_key).toBe('');
-    expect(sentMessages.some((m) => m.text.toLowerCase().includes('chave pix'))).toBe(true);
-  });
-
-  it('completa profile (PIX) → dispara welcome + link bank proativo', async () => {
-    await userService.handleRegistration('5511999999999', { name: 'João' });
-    clearSentMessages();
-    await userService.handleRegistration('5511999999999', { pix_key: 'joao@email.com' });
-    const welcome = sentMessages.find((m) => m.text.includes('Tudo certo'));
+    expect(user?.name).toBe('João Pedro Silva');
+    expect(user?.email).toBe('joao@email.com');
+    expect(user?.pix_key).toBe('');  // PIX é lazy
     const bankLink = sentMessages.find((m) => m.text.includes('Toque aqui'));
-    expect(welcome).toBeDefined();
     expect(bankLink).toBeDefined();
     expect(bankLink?.text).toContain('https://auth.fake/authorize');
   });
 
-  it('re-registro com PIX diferente atualiza sem duplicar', async () => {
-    await userService.handleRegistration('5511999999999', {
-      name: 'João',
-      pix_key: 'old@pix.com',
-    });
-    await userService.handleRegistration('5511999999999', { pix_key: 'new@pix.com' });
-    const user = usersRepository.findByPhone('5511999999999');
-    expect(user?.pix_key).toBe('new@pix.com');
-    expect(usersRepository.list()).toHaveLength(1);
+  it('profile parcial (só nome): NÃO persiste user, pede email', async () => {
+    await userService.handleRegistration('5511999999999', { name: 'João' });
+    expect(usersRepository.findByPhone('5511999999999')).toBeNull();
+    expect(sentMessages.some((m) => m.text.toLowerCase().includes('email'))).toBe(true);
   });
 
-  it('truncate merchant_name pra 25 chars (limite BR Code)', async () => {
+  it('profile parcial (só email): NÃO persiste user, pede nome', async () => {
+    await userService.handleRegistration('5511999999999', { email: 'joao@email.com' });
+    expect(usersRepository.findByPhone('5511999999999')).toBeNull();
+    expect(sentMessages.some((m) => m.text.toLowerCase().includes('nome'))).toBe(true);
+  });
+
+  it('email duplicado: responde mensagem de erro amigável, não persiste', async () => {
+    // Primeiro user toma o email
+    await userService.handleRegistration('5511AAA', {
+      name: 'Primeiro',
+      email: 'shared@email.com',
+    });
+    clearSentMessages();
+    // Segundo tenta com mesmo email
+    await userService.handleRegistration('5511BBB', {
+      name: 'Segundo',
+      email: 'shared@email.com',
+    });
+    expect(usersRepository.findByPhone('5511BBB')).toBeNull();
+    expect(sentMessages.some((m) => m.text.includes('email já está sendo usado'))).toBe(true);
+  });
+
+  it('lazy PIX collection: user existente sem PIX recebe PIX → persiste, pede pra reenviar bill', async () => {
+    await userService.handleRegistration('5511999999999', {
+      name: 'João',
+      email: 'joao@email.com',
+    });
+    clearSentMessages();
+    await userService.handleRegistration('5511999999999', { pix_key: 'joao@pix.com' });
+    const user = usersRepository.findByPhone('5511999999999');
+    expect(user?.pix_key).toBe('joao@pix.com');
+    expect(user?.pix_merchant_name).toBe('João');
+    expect(user?.pix_merchant_city).toBe('BRASIL');
+    expect(sentMessages.some((m) => m.text.toLowerCase().includes('reenviar') || m.text.includes('manda a conta de novo'))).toBe(true);
+  });
+
+  it('update PIX em user com PIX existente: atualiza sem repetir welcome', async () => {
+    await userService.handleRegistration('5511999999999', {
+      name: 'João',
+      email: 'joao@email.com',
+    });
+    // Coleta PIX inicial
+    await userService.handleRegistration('5511999999999', { pix_key: 'old@pix' });
+    clearSentMessages();
+    // Troca o PIX
+    await userService.handleRegistration('5511999999999', { pix_key: 'new@pix' });
+    expect(usersRepository.findByPhone('5511999999999')?.pix_key).toBe('new@pix');
+    expect(sentMessages.some((m) => m.text === 'Atualizado!')).toBe(true);
+  });
+
+  it('truncate merchant_name pra 25 chars (limite BR Code) quando deriva do nome longo', async () => {
     await userService.handleRegistration('5511999999999', {
       name: 'A'.repeat(50),
-      pix_key: 'x@pix',
+      email: 'a@email.com',
     });
+    await userService.handleRegistration('5511999999999', { pix_key: 'x@pix' });
     const user = usersRepository.findByPhone('5511999999999');
     expect(user?.pix_merchant_name).toHaveLength(25);
+  });
+
+  it('nomes compostos preservados (não truncate prematuro)', async () => {
+    await userService.handleRegistration('5511999999999', {
+      name: 'Maria Fernanda Silva',
+      email: 'maria@email.com',
+    });
+    expect(usersRepository.findByPhone('5511999999999')?.name).toBe('Maria Fernanda Silva');
   });
 });
 ```
@@ -3410,7 +3675,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import crypto from 'node:crypto';
 import { env } from '../config/env.js';
 import { extractIntent } from '../services/llm/gemini.js';
-import { createBillFromExtraction, notifyUnknown } from '../services/bills/bill.service.js';
+import { createBillFromExtraction } from '../services/bills/bill.service.js';
 import { userService } from '../services/users/user.service.js';
 import { startOAuthForUser } from '../services/cumbuca/cumbuca.client.js';
 import { cumbucaTokensRepository } from '../repositories/cumbuca-tokens.repository.js';
@@ -3466,17 +3731,6 @@ async function dispatchMessage(senderPhone: string, text: string): Promise<void>
       await userService.handleRegistration(normalizedPhone, intent.profile);
       return;
 
-    case 'link_bank':
-      if (!user) {
-        await userService.requireRegistrationFirst(normalizedPhone);
-        return;
-      }
-      // Recovery: apaga tokens existentes e dispara nova URL
-      cumbucaTokensRepository.delete(normalizedPhone);
-      const url = await startOAuthForUser(user);
-      await notifyUser(normalizedPhone, `Reconectando seu banco. Toque aqui pra autorizar:\n${url}`);
-      return;
-
     case 'create_bill':
       if (!user) {
         await userService.requireRegistrationFirst(normalizedPhone);
@@ -3496,7 +3750,7 @@ async function dispatchMessage(senderPhone: string, text: string): Promise<void>
         }
       } catch (err) {
         console.error('[webhook] createBill failed', err);
-        await notifyUnknown(normalizedPhone);
+        await userService.notifyUnknown(normalizedPhone, true);
       }
       return;
 
