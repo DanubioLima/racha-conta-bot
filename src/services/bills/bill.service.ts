@@ -2,26 +2,21 @@ import { ulid } from "ulid";
 import { billRepository } from "../../repositories/bill.repository.js";
 import { buildPixPayload } from "../pix/pix.js";
 import { sendText } from "../whatsapp/whatsapp.js";
-import { env } from "../../config/env.js";
 import { notifyNewBillCreated } from "../../workers/payment-scanner.worker.js";
+import type { User } from "../../repositories/user.repository.js";
 import type {
   Bill,
   ExtractedBill,
   IncomingTransaction,
+  MarkPaidInput,
   Participant,
 } from "./bill.types.js";
 
 function formatBRL(value: number): string {
-  return value.toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  });
+  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-function buildParticipants(
-  extracted: ExtractedBill,
-  billId: string,
-): Participant[] {
+function buildParticipants(extracted: ExtractedBill, billId: string, owner: User): Participant[] {
   return extracted.participants.map((p, i) => ({
     name: p.name,
     amount_due: Number(p.amount_due.toFixed(2)),
@@ -30,78 +25,64 @@ function buildParticipants(
       amount: p.amount_due,
       txid: `${billId.slice(-10)}${i}`,
       message: `Racha: ${extracted.description}`.slice(0, 60),
+      key: owner.pix_key,
+      merchantName: owner.pix_merchant_name,
+      merchantCity: owner.pix_merchant_city,
     }),
   }));
 }
 
 async function sendBillCreatedMessages(bill: Bill): Promise<void> {
-  // Por participante mandamos uma mensagem de texto isolada contendo só a
-  // string Copia-e-Cola — bubble minimática, long-press copia exatamente
-  // o BR Code sem cruft. O QR PNG (`buildPixQrPngBase64`) está dormente em
-  // `pix.ts` caso a gente queira voltar a enviar imagem no futuro.
   const names = bill.participants.map((p) => p.name).join(" e ");
   await sendText(
-    env.userWhatsappNumber,
+    bill.owner_phone,
     `Anotei sua conta de ${formatBRL(bill.total_amount)} em "${bill.description}". ` +
       `Cabe ${formatBRL(bill.amount_per_person)} pra cada um. ` +
       `Mando o PIX de cada um (${names}) a seguir.`,
   );
-
   for (const participant of bill.participants) {
-    await sendText(env.userWhatsappNumber, participant.pix_payload);
+    await sendText(bill.owner_phone, participant.pix_payload);
   }
 }
 
 function renderPaidMessage(bill: Bill, paid: Participant): string {
   const remaining = bill.participants.filter((p) => p.status === "PENDING");
-  if (remaining.length === 0) {
-    return "";
-  }
+  if (remaining.length === 0) return "";
   const names = remaining.map((p) => p.name).join(", ");
-  return `${paid.name} acabou de pagar! ${formatBRL(paid.amount_due)} caíram aqui. Ainda falta: ${names}.`;
+  return `${paid.name} acabou de pagar! ${formatBRL(paid.amount_due)} 💰 Ainda falta: ${names}.`;
 }
 
 function renderClosedMessage(bill: Bill): string {
   return `Fechou! Todo mundo pagou a conta de "${bill.description}". Saldo zerado 💸`;
 }
 
-export async function createBillFromExtraction(
-  extracted: ExtractedBill,
-): Promise<Bill> {
-  console.log("[bill] createBill from extraction", extracted);
-  const id = ulid();
-  // Divide by headcount (includes the user when they're in the split), not by
-  // participants.length (those are only the ones who owe PIX back).
-  const divisor = Math.max(
-    extracted.headcount,
-    extracted.participants.length,
-    1,
+function pendingListText(prefix: string, openBills: Bill[]): string {
+  const pend = openBills.flatMap((b) =>
+    b.participants.filter((p) => p.status === "PENDING").map((p) => `${p.name} (${formatBRL(p.amount_due)})`),
   );
+  if (pend.length === 0) return "Você não tem nenhuma conta em aberto.";
+  return `${prefix}${pend.join(", ")}.`;
+}
+
+export async function createBillFromExtraction(extracted: ExtractedBill, owner: User): Promise<Bill> {
+  console.log("[bill] createBill from extraction", { owner: owner.phone, extracted });
+  const id = ulid();
+  const divisor = Math.max(extracted.headcount, extracted.participants.length, 1);
   const amountPerPerson = Number((extracted.total_amount / divisor).toFixed(2));
 
   const bill: Bill = {
     id,
+    owner_phone: owner.phone,
     description: extracted.description,
     total_amount: Number(extracted.total_amount.toFixed(2)),
     amount_per_person: amountPerPerson,
     status: "OPEN",
     created_at: new Date().toISOString(),
-    participants: buildParticipants(extracted, id),
+    participants: buildParticipants(extracted, id, owner),
   };
 
   await billRepository.insert(bill);
-  console.log("[bill] inserted", {
-    id: bill.id,
-    description: bill.description,
-    total: bill.total_amount,
-    participants: bill.participants.map((p) => ({
-      name: p.name,
-      due: p.amount_due,
-    })),
-  });
-  // Falha de envio de WhatsApp não pode bloquear o agendamento do scan. A
-  // bill já está persistida; o usuário pode não receber o PIX nesse momento,
-  // mas o scanner ainda vai reconciliar pagamentos quando chegarem.
+  console.log("[bill] inserted", { id: bill.id, owner: bill.owner_phone });
   try {
     await sendBillCreatedMessages(bill);
   } catch (sendError) {
@@ -111,26 +92,86 @@ export async function createBillFromExtraction(
   return bill;
 }
 
+// ---- mark_paid (manual) ----
+
+interface PaidCandidate {
+  billId: string;
+  participantName: string;
+  amountDue: number;
+}
+
+function collectCandidates(openBills: Bill[], input: MarkPaidInput): PaidCandidate[] {
+  const out: PaidCandidate[] = [];
+  const wantName = input.name?.trim().toLowerCase();
+  for (const bill of openBills) {
+    for (const p of bill.participants) {
+      if (p.status !== "PENDING") continue;
+      const nameOk = wantName
+        ? p.name.toLowerCase().includes(wantName) || wantName.includes(p.name.toLowerCase())
+        : true;
+      const amountOk = input.amount != null ? Math.abs(p.amount_due - input.amount) < 0.005 : true;
+      if (nameOk && amountOk) {
+        out.push({ billId: bill.id, participantName: p.name, amountDue: p.amount_due });
+      }
+    }
+  }
+  return out;
+}
+
+export async function markPaid(ownerPhone: string, input: MarkPaidInput): Promise<void> {
+  const openBills = await billRepository.findOpenForOwner(ownerPhone);
+
+  if (!input.name?.trim() && input.amount == null) {
+    await sendText(ownerPhone, pendingListText("Quem pagou? Em aberto: ", openBills));
+    return;
+  }
+
+  const candidates = collectCandidates(openBills, input);
+  if (candidates.length === 0) {
+    await sendText(ownerPhone, `Não achei ninguém pendente com esse nome/valor. ${pendingListText("Em aberto: ", openBills)}`);
+    return;
+  }
+  if (candidates.length > 1) {
+    const list = candidates.map((c) => `${c.participantName} (${formatBRL(c.amountDue)})`).join(", ");
+    await sendText(ownerPhone, `Quem pagou? Tenho em aberto: ${list}.`);
+    return;
+  }
+
+  const match = candidates[0]!;
+  const updated = await billRepository.update(match.billId, (b) => {
+    const p = b.participants.find((x) => x.name === match.participantName);
+    if (!p || p.status === "PAID") return;
+    p.status = "PAID";
+    p.paid_at = new Date().toISOString();
+    if (b.participants.every((x) => x.status === "PAID")) b.status = "CLOSED";
+  });
+  if (!updated) return;
+
+  if (updated.status === "CLOSED") {
+    await sendText(ownerPhone, renderClosedMessage(updated));
+    return;
+  }
+  const paid = updated.participants.find((x) => x.name === match.participantName);
+  if (paid) {
+    const msg = renderPaidMessage(updated, paid);
+    if (msg) await sendText(ownerPhone, msg);
+  }
+}
+
+// ---- reconcile (Cumbuca, owner-scoped) ----
+
 interface MatchResult {
   billId: string;
   participantName: string;
 }
 
-// Returns the bill+participant that matches, or null if no candidate found.
-// Match rules:
-//   1. Find an OPEN bill with a PENDING participant whose amount_due === tx.amount.
-//   2. If multiple participants match by amount, prefer the one whose name matches
-//      (case-insensitive substring) tx.payer_name.
-//   3. If still multiple, pick the first PENDING in order.
-async function findMatch(tx: IncomingTransaction): Promise<MatchResult | null> {
-  const openBills = await billRepository.findOpen();
+async function findMatch(tx: IncomingTransaction, ownerPhone: string): Promise<MatchResult | null> {
+  const openBills = await billRepository.findOpenForOwner(ownerPhone);
   for (const bill of openBills) {
     const candidates = bill.participants.filter(
-      (p) =>
-        p.status === "PENDING" && Math.abs(p.amount_due - tx.amount) < 0.005,
+      (p) => p.status === "PENDING" && Math.abs(p.amount_due - tx.amount) < 0.005,
     );
     if (candidates.length === 0) continue;
-
     const byName = candidates.find((p) => {
       const a = p.name.toLowerCase();
       const b = tx.payer_name.toLowerCase();
@@ -142,14 +183,10 @@ async function findMatch(tx: IncomingTransaction): Promise<MatchResult | null> {
   return null;
 }
 
-export async function tryReconcile(tx: IncomingTransaction): Promise<boolean> {
-  const match = await findMatch(tx);
+export async function tryReconcile(tx: IncomingTransaction, ownerPhone: string): Promise<boolean> {
+  const match = await findMatch(tx, ownerPhone);
   if (!match) {
-    console.log("[bill] tryReconcile no match", {
-      txId: tx.id,
-      amount: tx.amount,
-      payer: tx.payer_name,
-    });
+    console.log("[bill] tryReconcile no match", { txId: tx.id, amount: tx.amount, payer: tx.payer_name });
     return false;
   }
   console.log("[bill] tryReconcile matched", { txId: tx.id, ...match });
@@ -159,29 +196,18 @@ export async function tryReconcile(tx: IncomingTransaction): Promise<boolean> {
     if (!p || p.status === "PAID") return;
     p.status = "PAID";
     p.paid_at = new Date().toISOString();
-    if (b.participants.every((x) => x.status === "PAID")) {
-      b.status = "CLOSED";
-    }
+    if (b.participants.every((x) => x.status === "PAID")) b.status = "CLOSED";
   });
   if (!updated) return false;
 
-  const paidParticipant = updated.participants.find(
-    (x) => x.name === match.participantName,
-  );
-  if (paidParticipant) {
-    const msg = renderPaidMessage(updated, paidParticipant);
-    if (msg) await sendText(env.userWhatsappNumber, msg);
+  const paid = updated.participants.find((x) => x.name === match.participantName);
+  if (paid) {
+    const msg = renderPaidMessage(updated, paid);
+    if (msg) await sendText(updated.owner_phone, msg);
   }
   if (updated.status === "CLOSED") {
     console.log("[bill] bill closed", { id: updated.id });
-    await sendText(env.userWhatsappNumber, renderClosedMessage(updated));
+    await sendText(updated.owner_phone, renderClosedMessage(updated));
   }
   return true;
-}
-
-export async function notifyUnknown(): Promise<void> {
-  await sendText(
-    env.userWhatsappNumber,
-    'Não consegui entender essa mensagem como uma conta pra dividir. Pode reformular? Ex: "Paguei 60 na pizzaria, dividir com João e Maria, 20 cada."',
-  );
 }
