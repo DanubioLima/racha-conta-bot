@@ -120,7 +120,7 @@ export async function scanForBillPayments(): Promise<void> {
 
   for (const transaction of credits) {
     if (await processedTransactionsRepository.wasAlreadyProcessed(transaction.id)) continue;
-    const matched = await tryReconcile(transaction);
+    const matched = await tryReconcile(transaction, env.userWhatsappNumber);
     // Só marca como processada quando bate com uma bill. Transações órfãs
     // (PIX recebido sem bill correspondente) ficam disponíveis pra retentativa
     // — se uma bill nova for criada cobrindo essa tx, o próximo scan reconcilia.

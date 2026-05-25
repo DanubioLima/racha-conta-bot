@@ -65,4 +65,10 @@ export const billRepository = {
   findOpen(): Promise<Bill[]> {
     return serialize(async () => (await readDb()).bills.filter((b) => b.status === 'OPEN'));
   },
+
+  findOpenForOwner(ownerPhone: string): Promise<Bill[]> {
+    return serialize(async () =>
+      (await readDb()).bills.filter((b) => b.status === 'OPEN' && b.owner_phone === ownerPhone),
+    );
+  },
 };

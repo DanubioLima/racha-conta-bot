@@ -11,6 +11,7 @@ export interface Participant {
 
 export interface Bill {
   id: string;
+  owner_phone: string;
   description: string;
   total_amount: number;
   amount_per_person: number;
