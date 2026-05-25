@@ -74,10 +74,10 @@ async function expireBillsOlderThanSevenDays(openBills: Bill[]): Promise<void> {
     const pendingNames = pending.map((p) => p.name).join(', ');
     console.log('[scanner] expired bill', { id: expired.id, description: expired.description });
     await sendText(
-      env.userWhatsappNumber,
+      expired.owner_phone,
       pending.length > 0
-        ? `⏱️ Bill "${expired.description}" expirou após 7 dias. Pendentes: ${pendingNames}.`
-        : `⏱️ Bill "${expired.description}" expirou após 7 dias.`,
+        ? `⏱️ Conta "${expired.description}" expirou após 7 dias. Pendentes: ${pendingNames}.`
+        : `⏱️ Conta "${expired.description}" expirou após 7 dias.`,
     );
   }
 }
