@@ -9,7 +9,7 @@ const ai = new GoogleGenAI({ apiKey: env.geminiApiKey });
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    intent: { type: Type.STRING, enum: ["create_bill", "unknown"] },
+    intent: { type: Type.STRING, enum: ["create_bill", "register_account", "mark_paid", "unknown"] },
     bill: {
       type: Type.OBJECT,
       properties: {
@@ -28,15 +28,26 @@ const RESPONSE_SCHEMA = {
           },
         },
       },
-      required: ["description", "total_amount", "headcount", "participants"],
+    },
+    profile: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING },
+        pix_key: { type: Type.STRING },
+      },
+    },
+    payment: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING },
+        amount: { type: Type.NUMBER },
+      },
     },
   },
   required: ["intent"],
 };
 
-export async function extractBillFromText(
-  text: string,
-): Promise<ExtractionResult> {
+export async function extractIntent(text: string): Promise<ExtractionResult> {
   console.log("[gemini] extracting", { text });
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-lite",
@@ -51,9 +62,7 @@ export async function extractBillFromText(
 
   const raw = response.text;
   console.log("[gemini] raw response", { raw });
-  if (!raw) {
-    return { intent: "unknown" };
-  }
+  if (!raw) return { intent: "unknown" };
   try {
     const parsed = JSON.parse(raw) as ExtractionResult;
     console.log("[gemini] parsed", parsed);

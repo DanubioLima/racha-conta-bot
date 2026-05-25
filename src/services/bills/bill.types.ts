@@ -29,10 +29,21 @@ export interface ExtractedBill {
   participants: { name: string; amount_due: number }[];
 }
 
-export interface ExtractionResult {
-  intent: 'create_bill' | 'unknown';
-  bill?: ExtractedBill;
+export interface RegisterProfile {
+  name?: string;
+  pix_key?: string;
 }
+
+export interface MarkPaidInput {
+  name?: string;
+  amount?: number;
+}
+
+export type ExtractionResult =
+  | { intent: 'create_bill'; bill: ExtractedBill }
+  | { intent: 'register_account'; profile: RegisterProfile }
+  | { intent: 'mark_paid'; payment: MarkPaidInput }
+  | { intent: 'unknown' };
 
 export interface IncomingTransaction {
   id: string;
