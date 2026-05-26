@@ -1,10 +1,8 @@
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
-import path from 'node:path';
+import { db } from './db.js';
 
 // Registra mensagens que o Gemini não conseguiu classificar (intent unknown),
-// pra analisar depois e descobrir usos não previstos. Persistido no volume,
+// pra analisar depois e descobrir usos não previstos. Persistido no banco,
 // não em log (que rotaciona). Cap FIFO pra não crescer sem limite.
-const STORE_PATH = path.resolve('data/unknown-intents.json');
 const MAX_ENTRIES = 1000;
 
 export interface UnknownIntent {
@@ -14,47 +12,46 @@ export interface UnknownIntent {
   registered: boolean;
 }
 
-interface StoreShape {
-  entries: UnknownIntent[];
+interface UnknownIntentRow {
+  at: string;
+  phone: string;
+  text: string;
+  registered: number;
 }
 
-let chain: Promise<unknown> = Promise.resolve();
-function serialize<T>(fn: () => Promise<T>): Promise<T> {
-  const next = chain.then(fn, fn);
-  chain = next.catch(() => undefined);
-  return next;
-}
+const insertEntry = db.prepare(
+  'INSERT INTO unknown_intents (at, phone, text, registered) VALUES (@at, @phone, @text, @registered)',
+);
+const trim = db.prepare(
+  `DELETE FROM unknown_intents WHERE id NOT IN (
+     SELECT id FROM unknown_intents ORDER BY id DESC LIMIT ?
+   )`,
+);
+const selectAll = db.prepare<[], UnknownIntentRow>(
+  'SELECT at, phone, text, registered FROM unknown_intents ORDER BY id',
+);
 
-async function ensureFile(): Promise<void> {
-  await mkdir(path.dirname(STORE_PATH), { recursive: true });
-  try {
-    await access(STORE_PATH);
-  } catch {
-    await writeFile(STORE_PATH, JSON.stringify({ entries: [] } satisfies StoreShape, null, 2), 'utf8');
-  }
-}
-
-async function read(): Promise<StoreShape> {
-  await ensureFile();
-  return JSON.parse(await readFile(STORE_PATH, 'utf8')) as StoreShape;
-}
-
-async function write(store: StoreShape): Promise<void> {
-  await writeFile(STORE_PATH, JSON.stringify(store, null, 2), 'utf8');
-}
+const recordTx = db.transaction((entry: { at: string; phone: string; text: string; registered: number }) => {
+  insertEntry.run(entry);
+  trim.run(MAX_ENTRIES);
+});
 
 export const unknownIntentsRepository = {
-  record(input: { phone: string; text: string; registered: boolean }): Promise<void> {
-    return serialize(async () => {
-      const store = await read();
-      store.entries.push({ at: new Date().toISOString(), ...input });
-      if (store.entries.length > MAX_ENTRIES) {
-        store.entries = store.entries.slice(-MAX_ENTRIES);
-      }
-      await write(store);
+  async record(input: { phone: string; text: string; registered: boolean }): Promise<void> {
+    recordTx({
+      at: new Date().toISOString(),
+      phone: input.phone,
+      text: input.text,
+      registered: input.registered ? 1 : 0,
     });
   },
-  list(): Promise<UnknownIntent[]> {
-    return serialize(async () => (await read()).entries);
+
+  async list(): Promise<UnknownIntent[]> {
+    return selectAll.all().map((row) => ({
+      at: row.at,
+      phone: row.phone,
+      text: row.text,
+      registered: row.registered === 1,
+    }));
   },
 };
