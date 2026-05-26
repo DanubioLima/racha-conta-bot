@@ -1,7 +1,4 @@
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
-import path from 'node:path';
-
-const DB_PATH = path.resolve('data/users.json');
+import { db } from './db.js';
 
 export interface User {
   phone: string;                 // E.164 sem +, normalizado (ver webhook)
@@ -12,58 +9,32 @@ export interface User {
   created_at: string;
 }
 
-interface DbShape {
-  users: Record<string, User>;
-}
-
-let chain: Promise<unknown> = Promise.resolve();
-
-function serialize<T>(fn: () => Promise<T>): Promise<T> {
-  const next = chain.then(fn, fn);
-  chain = next.catch(() => undefined);
-  return next;
-}
-
-async function ensureFile(): Promise<void> {
-  await mkdir(path.dirname(DB_PATH), { recursive: true });
-  try {
-    await access(DB_PATH);
-  } catch {
-    await writeFile(DB_PATH, JSON.stringify({ users: {} } satisfies DbShape, null, 2), 'utf8');
-  }
-}
-
-async function readDb(): Promise<DbShape> {
-  await ensureFile();
-  return JSON.parse(await readFile(DB_PATH, 'utf8')) as DbShape;
-}
-
-async function writeDb(db: DbShape): Promise<void> {
-  await writeFile(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
-}
+const selectByPhone = db.prepare<[string], User>('SELECT * FROM users WHERE phone = ?');
+// phone é PRIMARY KEY (unique). OR REPLACE preserva o comportamento antigo do
+// Record, em que insert sobrescrevia um telefone já existente.
+const insertUser = db.prepare(
+  `INSERT OR REPLACE INTO users (phone, name, pix_key, pix_merchant_name, pix_merchant_city, created_at)
+   VALUES (@phone, @name, @pix_key, @pix_merchant_name, @pix_merchant_city, @created_at)`,
+);
+const updateUser = db.prepare(
+  `UPDATE users SET name = @name, pix_key = @pix_key, pix_merchant_name = @pix_merchant_name,
+   pix_merchant_city = @pix_merchant_city, created_at = @created_at WHERE phone = @phone`,
+);
 
 export const userRepository = {
-  findByPhone(phone: string): Promise<User | null> {
-    return serialize(async () => (await readDb()).users[phone] ?? null);
+  async findByPhone(phone: string): Promise<User | null> {
+    return selectByPhone.get(phone) ?? null;
   },
 
-  insert(user: User): Promise<void> {
-    return serialize(async () => {
-      const db = await readDb();
-      db.users[user.phone] = user;
-      await writeDb(db);
-    });
+  async insert(user: User): Promise<void> {
+    insertUser.run(user);
   },
 
-  update(phone: string, partial: Partial<User>): Promise<User | null> {
-    return serialize(async () => {
-      const db = await readDb();
-      const existing = db.users[phone];
-      if (!existing) return null;
-      const updated: User = { ...existing, ...partial };
-      db.users[phone] = updated;
-      await writeDb(db);
-      return updated;
-    });
+  async update(phone: string, partial: Partial<User>): Promise<User | null> {
+    const existing = selectByPhone.get(phone);
+    if (!existing) return null;
+    const updated: User = { ...existing, ...partial };
+    updateUser.run(updated);
+    return updated;
   },
 };

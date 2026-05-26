@@ -1,74 +1,138 @@
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
-import path from 'node:path';
-import type { Bill } from '../services/bills/bill.types.js';
+import { db } from './db.js';
+import type { Bill, Participant } from '../services/bills/bill.types.js';
 
-const DB_PATH = path.resolve('data/db.json');
-
-interface DbShape {
-  bills: Bill[];
+interface BillRow {
+  id: string;
+  owner_phone: string;
+  description: string;
+  total_amount: number;
+  amount_per_person: number;
+  status: Bill['status'];
+  created_at: string;
 }
 
-// Single in-process mutex: queue writes/reads so the worker and the webhook
-// route never interleave on the same JSON file.
-let chain: Promise<unknown> = Promise.resolve();
-
-function serialize<T>(fn: () => Promise<T>): Promise<T> {
-  const next = chain.then(fn, fn);
-  chain = next.catch(() => undefined);
-  return next;
+interface ParticipantRow {
+  name: string;
+  amount_due: number;
+  status: Participant['status'];
+  pix_payload: string;
+  paid_at: string | null;
 }
 
-async function ensureFile(): Promise<void> {
-  await mkdir(path.dirname(DB_PATH), { recursive: true });
-  try {
-    await access(DB_PATH);
-  } catch {
-    const empty: DbShape = { bills: [] };
-    await writeFile(DB_PATH, JSON.stringify(empty, null, 2), 'utf8');
-  }
+const selectAllBills = db.prepare<[], BillRow>('SELECT * FROM bills');
+const selectBill = db.prepare<[string], BillRow>('SELECT * FROM bills WHERE id = ?');
+const selectOpen = db.prepare<[], BillRow>("SELECT * FROM bills WHERE status = 'OPEN'");
+const selectOpenForOwner = db.prepare<[string], BillRow>(
+  "SELECT * FROM bills WHERE status = 'OPEN' AND owner_phone = ?",
+);
+const selectParticipants = db.prepare<[string], ParticipantRow>(
+  'SELECT name, amount_due, status, pix_payload, paid_at FROM participants WHERE bill_id = ? ORDER BY position',
+);
+
+const insertBill = db.prepare(
+  `INSERT INTO bills (id, owner_phone, description, total_amount, amount_per_person, status, created_at)
+   VALUES (@id, @owner_phone, @description, @total_amount, @amount_per_person, @status, @created_at)`,
+);
+const updateBill = db.prepare(
+  `UPDATE bills SET owner_phone = @owner_phone, description = @description, total_amount = @total_amount,
+   amount_per_person = @amount_per_person, status = @status, created_at = @created_at WHERE id = @id`,
+);
+const deleteParticipants = db.prepare('DELETE FROM participants WHERE bill_id = ?');
+const insertParticipant = db.prepare(
+  `INSERT INTO participants (bill_id, position, name, amount_due, status, pix_payload, paid_at)
+   VALUES (@bill_id, @position, @name, @amount_due, @status, @pix_payload, @paid_at)`,
+);
+
+function hydrate(row: BillRow): Bill {
+  const participants = selectParticipants.all(row.id).map(
+    (p): Participant => ({
+      name: p.name,
+      amount_due: p.amount_due,
+      status: p.status,
+      pix_payload: p.pix_payload,
+      // paid_at é opcional no tipo; só inclui quando existe pra não emitir
+      // "paid_at": null e bater com o shape do JSON antigo.
+      ...(p.paid_at !== null ? { paid_at: p.paid_at } : {}),
+    }),
+  );
+  return {
+    id: row.id,
+    owner_phone: row.owner_phone,
+    description: row.description,
+    total_amount: row.total_amount,
+    amount_per_person: row.amount_per_person,
+    status: row.status,
+    created_at: row.created_at,
+    participants,
+  };
 }
 
-async function readDb(): Promise<DbShape> {
-  await ensureFile();
-  const raw = await readFile(DB_PATH, 'utf8');
-  return JSON.parse(raw) as DbShape;
+// Participantes não têm id estável vindo de fora; o caminho mais simples e
+// correto é reescrever o conjunto inteiro da bill a cada mutação.
+function writeParticipants(billId: string, participants: Participant[]): void {
+  deleteParticipants.run(billId);
+  participants.forEach((p, position) =>
+    insertParticipant.run({
+      bill_id: billId,
+      position,
+      name: p.name,
+      amount_due: p.amount_due,
+      status: p.status,
+      pix_payload: p.pix_payload,
+      paid_at: p.paid_at ?? null,
+    }),
+  );
 }
 
-async function writeDb(db: DbShape): Promise<void> {
-  await writeFile(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
-}
+const insertTx = db.transaction((bill: Bill) => {
+  insertBill.run({
+    id: bill.id,
+    owner_phone: bill.owner_phone,
+    description: bill.description,
+    total_amount: bill.total_amount,
+    amount_per_person: bill.amount_per_person,
+    status: bill.status,
+    created_at: bill.created_at,
+  });
+  writeParticipants(bill.id, bill.participants);
+});
+
+const updateTx = db.transaction((billId: string, mutator: (b: Bill) => void): Bill | null => {
+  const row = selectBill.get(billId);
+  if (!row) return null;
+  const bill = hydrate(row);
+  mutator(bill);
+  updateBill.run({
+    id: bill.id,
+    owner_phone: bill.owner_phone,
+    description: bill.description,
+    total_amount: bill.total_amount,
+    amount_per_person: bill.amount_per_person,
+    status: bill.status,
+    created_at: bill.created_at,
+  });
+  writeParticipants(bill.id, bill.participants);
+  return bill;
+});
 
 export const billRepository = {
-  list(): Promise<Bill[]> {
-    return serialize(async () => (await readDb()).bills);
+  async list(): Promise<Bill[]> {
+    return selectAllBills.all().map(hydrate);
   },
 
-  insert(bill: Bill): Promise<void> {
-    return serialize(async () => {
-      const db = await readDb();
-      db.bills.push(bill);
-      await writeDb(db);
-    });
+  async insert(bill: Bill): Promise<void> {
+    insertTx(bill);
   },
 
-  update(billId: string, mutator: (b: Bill) => void): Promise<Bill | null> {
-    return serialize(async () => {
-      const db = await readDb();
-      const bill = db.bills.find((b) => b.id === billId);
-      if (!bill) return null;
-      mutator(bill);
-      await writeDb(db);
-      return bill;
-    });
+  async update(billId: string, mutator: (b: Bill) => void): Promise<Bill | null> {
+    return updateTx(billId, mutator);
   },
 
-  findOpen(): Promise<Bill[]> {
-    return serialize(async () => (await readDb()).bills.filter((b) => b.status === 'OPEN'));
+  async findOpen(): Promise<Bill[]> {
+    return selectOpen.all().map(hydrate);
   },
 
-  findOpenForOwner(ownerPhone: string): Promise<Bill[]> {
-    return serialize(async () =>
-      (await readDb()).bills.filter((b) => b.status === 'OPEN' && b.owner_phone === ownerPhone),
-    );
+  async findOpenForOwner(ownerPhone: string): Promise<Bill[]> {
+    return selectOpenForOwner.all(ownerPhone).map(hydrate);
   },
 };
