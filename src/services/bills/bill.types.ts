@@ -44,7 +44,7 @@ export type ExtractionResult =
   | { intent: 'create_bill'; bill: ExtractedBill }
   | { intent: 'register_account'; profile: RegisterProfile }
   | { intent: 'mark_paid'; payment: MarkPaidInput }
-  | { intent: 'unknown' };
+  | { intent: 'unknown'; reply?: string };
 
 export interface IncomingTransaction {
   id: string;

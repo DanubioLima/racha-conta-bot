@@ -44,17 +44,35 @@ const RESPONSE_SCHEMA = {
         amount: { type: Type.NUMBER },
       },
     },
+    reply: { type: Type.STRING },
   },
   required: ["intent"],
 };
 
-export async function extractIntent(text: string): Promise<ExtractionResult> {
+export interface UserContext {
+  registered: boolean;
+  hasPix: boolean;
+  name: string; // '' quando ainda não coletado
+}
+
+function buildContextNote(ctx: UserContext): string {
+  if (!ctx.registered) {
+    return '\n\nCONTEXTO DO REMETENTE: ainda NÃO tem cadastro. No campo "reply" (quando intent=unknown), conduza pro cadastro: peça nome + chave PIX, ex: \'Sou João, pix joao@email.com\'.';
+  }
+  if (!ctx.hasPix) {
+    return '\n\nCONTEXTO DO REMETENTE: cadastrado, mas SEM chave PIX. No campo "reply" (unknown), peça a chave PIX, ex: \'pix joao@email.com\'.';
+  }
+  const nome = ctx.name ? ` (nome: ${ctx.name})` : '';
+  return `\n\nCONTEXTO DO REMETENTE: cadastrado${nome}. No campo "reply" (unknown), sugira criar uma conta ('paguei 60 na pizza, divide com Ana e Beto') ou marcar pago ('a Ana me pagou').`;
+}
+
+export async function extractIntent(text: string, ctx: UserContext): Promise<ExtractionResult> {
   console.log("[gemini] extracting", { text });
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-lite",
     contents: [{ role: "user", parts: [{ text }] }],
     config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: SYSTEM_INSTRUCTION + buildContextNote(ctx),
       responseMimeType: "application/json",
       responseSchema: RESPONSE_SCHEMA,
       temperature: 0.1,

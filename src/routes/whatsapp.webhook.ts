@@ -10,6 +10,7 @@ import {
 import { userRepository } from "../repositories/user.repository.js";
 import { unknownIntentsRepository } from "../repositories/unknown-intents.repository.js";
 import { normalizeBrNumber } from "../lib/phone.js";
+import { sendText } from "../services/whatsapp/whatsapp.js";
 
 interface EvolutionWebhookBody {
   event?: string;
@@ -55,7 +56,11 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
     void (async () => {
       try {
         const user = await userRepository.findByPhone(senderPhone);
-        const result = await extractIntent(text);
+        const result = await extractIntent(text, {
+          registered: !!user,
+          hasPix: !!user?.pix_key,
+          name: user?.name ?? "",
+        });
         switch (result.intent) {
           case "register_account":
             // O schema do Gemini não garante o objeto do payload — se vier
@@ -73,10 +78,16 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
             if (!user) { await requireRegistrationFirst(senderPhone); break; }
             await markPaid(senderPhone, result.payment ?? {});
             break;
-          default:
+          default: {
             await unknownIntentsRepository.record({ phone: senderPhone, text, registered: !!user });
             console.log("[unknown-intent]", { phone: senderPhone, text });
-            await notifyUnknown(senderPhone, !!user);
+            const reply = result.reply?.trim();
+            if (reply && reply.length <= 300) {
+              await sendText(senderPhone, reply);
+            } else {
+              await notifyUnknown(senderPhone, !!user);
+            }
+          }
         }
         console.log("[webhook] flow finished ok");
       } catch (err) {
