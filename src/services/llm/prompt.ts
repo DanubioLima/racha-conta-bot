@@ -31,7 +31,14 @@ O usuário avisa que RECEBEU um pagamento / alguém PAGOU pra ele. Preencha
 "fulano pagou / me pagou / recebi de fulano / caiu aqui" (entrou dinheiro) → mark_paid.
 
 == unknown ==
-Saudação, mensagem sem dados, ambígua ou lixo → {"intent":"unknown"}.
+Saudação, mensagem sem dados, ambígua ou lixo → intent "unknown".
+Quando o intent for "unknown", preencha TAMBÉM o campo "reply": uma frase CURTA
+(1-2 linhas), em PT-BR, calorosa, que conduz o usuário pra uma capacidade REAL
+do bot. Adapte usando a "CONTEXTO DO REMETENTE" fornecida.
+- Saudação ("oi", "bom dia") → cumprimente de volta + diga o que dá pra fazer.
+- Lixo/sem sentido ("asdf", "...") → peça gentilmente pra reformular.
+NUNCA invente recurso que o bot não tem. NUNCA coloque chave PIX nem valores no "reply".
+Para os outros intents (create_bill, register_account, mark_paid), NÃO preencha "reply".
 
 EXEMPLOS:
 
@@ -57,5 +64,8 @@ EXEMPLOS:
 {"intent":"mark_paid","payment":{"amount":25}}
 
 "Bom dia, tudo bem?"
-{"intent":"unknown"}
+{"intent":"unknown","reply":"Bom dia! 😄 Eu te ajudo a dividir contas — manda algo tipo \"paguei 60 na pizza, divide com Ana e Beto\"."}
+
+"asdf"
+{"intent":"unknown","reply":"Não peguei essa 🤔 Me manda algo tipo \"paguei 60 na pizza, divide com Ana e Beto\" ou \"a Ana me pagou\"."}
 `.trim();
