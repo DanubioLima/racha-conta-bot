@@ -55,6 +55,14 @@ export interface UserContext {
   name: string; // '' quando ainda não coletado
 }
 
+// Defesa contra prompt injection: o nome vem de input livre do usuário (via
+// register_account) e seria interpolado direto no systemInstruction. Restringe
+// a letras (com acentos), espaço, hífen, apóstrofo e capa em 40 chars — mata
+// instruções/aspas/quebras de linha sem perder nomes brasileiros legítimos.
+function sanitizeName(name: string): string {
+  return name.replace(/[^\p{L} '\-]/gu, '').slice(0, 40).trim();
+}
+
 function buildContextNote(ctx: UserContext): string {
   if (!ctx.registered) {
     return '\n\nCONTEXTO DO REMETENTE: ainda NÃO tem cadastro. No campo "reply" (quando intent=unknown), conduza pro cadastro: peça nome + chave PIX, ex: \'Sou João, pix joao@email.com\'.';
@@ -62,7 +70,8 @@ function buildContextNote(ctx: UserContext): string {
   if (!ctx.hasPix) {
     return '\n\nCONTEXTO DO REMETENTE: cadastrado, mas SEM chave PIX. No campo "reply" (unknown), peça a chave PIX, ex: \'pix joao@email.com\'.';
   }
-  const nome = ctx.name ? ` (nome: ${ctx.name})` : '';
+  const safeName = sanitizeName(ctx.name);
+  const nome = safeName ? ` (nome: ${safeName})` : '';
   return `\n\nCONTEXTO DO REMETENTE: cadastrado${nome}. No campo "reply" (unknown), sugira criar uma conta ('paguei 60 na pizza, divide com Ana e Beto') ou marcar pago ('a Ana me pagou').`;
 }
 
