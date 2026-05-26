@@ -10,11 +10,18 @@ export interface User {
 }
 
 const selectByPhone = db.prepare<[string], User>('SELECT * FROM users WHERE phone = ?');
-// phone é PRIMARY KEY (unique). OR REPLACE preserva o comportamento antigo do
-// Record, em que insert sobrescrevia um telefone já existente.
+// phone é PRIMARY KEY (unique). UPSERT preserva o overwrite-on-duplicate do
+// Record antigo sem o DELETE+INSERT do OR REPLACE — que, com a FK bills->users,
+// dispararia o ON DELETE e quebraria o re-registro de um phone que já tem bills.
 const insertUser = db.prepare(
-  `INSERT OR REPLACE INTO users (phone, name, pix_key, pix_merchant_name, pix_merchant_city, created_at)
-   VALUES (@phone, @name, @pix_key, @pix_merchant_name, @pix_merchant_city, @created_at)`,
+  `INSERT INTO users (phone, name, pix_key, pix_merchant_name, pix_merchant_city, created_at)
+   VALUES (@phone, @name, @pix_key, @pix_merchant_name, @pix_merchant_city, @created_at)
+   ON CONFLICT(phone) DO UPDATE SET
+     name = excluded.name,
+     pix_key = excluded.pix_key,
+     pix_merchant_name = excluded.pix_merchant_name,
+     pix_merchant_city = excluded.pix_merchant_city,
+     created_at = excluded.created_at`,
 );
 const updateUser = db.prepare(
   `UPDATE users SET name = @name, pix_key = @pix_key, pix_merchant_name = @pix_merchant_name,
