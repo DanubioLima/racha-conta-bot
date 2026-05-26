@@ -81,7 +81,7 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
           default: {
             await unknownIntentsRepository.record({ phone: senderPhone, text, registered: !!user });
             console.log("[unknown-intent]", { phone: senderPhone, text });
-            const softReply = result.reply?.trim();
+            const softReply = result.intent === 'unknown' ? result.reply?.trim() : undefined;
             if (softReply && softReply.length <= 300) {
               await sendText(senderPhone, softReply);
             } else {

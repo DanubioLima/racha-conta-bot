@@ -34,7 +34,7 @@ O usuário avisa que RECEBEU um pagamento / alguém PAGOU pra ele. Preencha
 Saudação, mensagem sem dados, ambígua ou lixo → intent "unknown".
 Quando o intent for "unknown", preencha TAMBÉM o campo "reply": uma frase CURTA
 (1-2 linhas), em PT-BR, calorosa, que conduz o usuário pra uma capacidade REAL
-do bot. Adapte usando a "CONTEXTO DO REMETENTE" fornecida.
+do bot. Adapte usando o "CONTEXTO DO REMETENTE" fornecido.
 - Saudação ("oi", "bom dia") → cumprimente de volta + diga o que dá pra fazer.
 - Lixo/sem sentido ("asdf", "...") → peça gentilmente pra reformular.
 NUNCA invente recurso que o bot não tem. NUNCA coloque chave PIX nem valores no "reply".
