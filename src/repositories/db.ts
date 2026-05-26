@@ -27,7 +27,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS bills (
     id               TEXT PRIMARY KEY,
-    owner_phone      TEXT NOT NULL,
+    owner_phone      TEXT NOT NULL REFERENCES users(phone),
     description      TEXT NOT NULL,
     total_amount     REAL NOT NULL,
     amount_per_person REAL NOT NULL,

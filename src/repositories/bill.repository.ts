@@ -19,11 +19,15 @@ interface ParticipantRow {
   paid_at: string | null;
 }
 
-const selectAllBills = db.prepare<[], BillRow>('SELECT * FROM bills');
+// ORDER BY created_at (id como desempate) preserva a ordem de inserção que o
+// JSON antigo garantia — o mark_paid itera as bills e a ordem importa.
+const selectAllBills = db.prepare<[], BillRow>('SELECT * FROM bills ORDER BY created_at, id');
 const selectBill = db.prepare<[string], BillRow>('SELECT * FROM bills WHERE id = ?');
-const selectOpen = db.prepare<[], BillRow>("SELECT * FROM bills WHERE status = 'OPEN'");
+const selectOpen = db.prepare<[], BillRow>(
+  "SELECT * FROM bills WHERE status = 'OPEN' ORDER BY created_at, id",
+);
 const selectOpenForOwner = db.prepare<[string], BillRow>(
-  "SELECT * FROM bills WHERE status = 'OPEN' AND owner_phone = ?",
+  "SELECT * FROM bills WHERE status = 'OPEN' AND owner_phone = ? ORDER BY created_at, id",
 );
 const selectParticipants = db.prepare<[string], ParticipantRow>(
   'SELECT name, amount_due, status, pix_payload, paid_at FROM participants WHERE bill_id = ? ORDER BY position',
