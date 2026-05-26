@@ -8,6 +8,7 @@ import {
   notifyUnknown,
 } from "../services/users/user.service.js";
 import { userRepository } from "../repositories/user.repository.js";
+import { unknownIntentsRepository } from "../repositories/unknown-intents.repository.js";
 import { normalizeBrNumber } from "../lib/phone.js";
 
 interface EvolutionWebhookBody {
@@ -73,6 +74,8 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
             await markPaid(senderPhone, result.payment ?? {});
             break;
           default:
+            await unknownIntentsRepository.record({ phone: senderPhone, text, registered: !!user });
+            console.log("[unknown-intent]", { phone: senderPhone, text });
             await notifyUnknown(senderPhone, !!user);
         }
         console.log("[webhook] flow finished ok");
