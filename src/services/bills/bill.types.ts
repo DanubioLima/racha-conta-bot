@@ -38,6 +38,16 @@ export interface RegisterProfile {
 export interface MarkPaidInput {
   name?: string;
   amount?: number;
+  // Nome/descrição da CONTA dada como paga ("me pagaram a conta da Netflix") —
+  // diferente de `name`, que é a pessoa.
+  bill?: string;
+}
+
+export interface CloseInput {
+  all?: boolean;
+  reference?: string; // descrição/menção da conta ("ela", "a pizza")
+  // true só quando o usuário confirma um "fecho assim mesmo?" anterior (via histórico).
+  confirmed?: boolean;
 }
 
 export type ExtractionResult =
@@ -45,6 +55,7 @@ export type ExtractionResult =
   | { intent: 'register_account'; profile: RegisterProfile }
   | { intent: 'mark_paid'; payment: MarkPaidInput }
   | { intent: 'list_bills' }
+  | { intent: 'close_bill'; close: CloseInput }
   | { intent: 'unknown'; reply?: string };
 
 export interface IncomingTransaction {
