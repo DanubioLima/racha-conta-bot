@@ -81,7 +81,12 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
       try {
         switch (result.intent) {
           case "register_account":
-            if (!result.profile) { await sendText(senderPhone, fallbackReply({ registered: !!user })); break; }
+            // profile ausente OU vazio ({}) → não há nome nem PIX pra registrar;
+            // trata como conversa em vez de cair em silêncio (patch vazio).
+            if (!result.profile?.name && !result.profile?.pix_key) {
+              await sendText(senderPhone, fallbackReply({ registered: !!user }));
+              break;
+            }
             await handleRegistration(senderPhone, result.profile);
             break;
 
@@ -109,12 +114,16 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
             break;
 
           default: {
-            await unknownIntentsRepository.record({ phone: senderPhone, text, registered: !!user });
-            console.log("[unknown-intent]", { phone: senderPhone, text });
             const softReply = result.intent === "unknown" ? result.reply?.trim() : undefined;
             if (softReply && softReply.length <= 300) {
               await sendText(senderPhone, softReply);
             } else {
+              // Só registra em unknown-intents quando NÃO há reply utilizável: é o
+              // caso que a tabela existe pra capturar (Gemini não soube responder).
+              // Saudação/obrigado/off-topic já viram reply por design — gravá-los
+              // poluiria a analytics. Loga só metadados (texto pode ter PII).
+              await unknownIntentsRepository.record({ phone: senderPhone, text, registered: !!user });
+              console.log("[unknown-intent recorded]", { phone: senderPhone, textLen: text.length });
               await sendText(senderPhone, fallbackReply({ registered: !!user }));
             }
           }
