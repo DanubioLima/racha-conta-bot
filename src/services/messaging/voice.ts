@@ -103,6 +103,12 @@ export function billClosed(description: string): string {
   return `Fechou! Todo mundo pagou ${what}. Saldo zerado 💸`;
 }
 
+export function billExpired(description: string, pendingNames: string[]): string {
+  const what = description ? `Conta "${description}"` : 'Conta';
+  const tail = pendingNames.length > 0 ? ` Pendentes: ${pendingNames.join(', ')}.` : '';
+  return `⏱️ ${what} expirou após 7 dias.${tail}`;
+}
+
 // ---- Listagem de contas em aberto ----
 
 // Resumo compacto das contas ABERTAS do dono (1 linha por conta). Recebe um shape
