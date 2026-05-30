@@ -1,16 +1,18 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { extractIntent } from "../services/llm/gemini.js";
+import { extractIntent, GeminiUnavailableError } from "../services/llm/gemini.js";
 import { createBillFromExtraction, markPaid } from "../services/bills/bill.service.js";
-import {
-  handleRegistration,
-  requireRegistrationFirst,
-  requirePixFirst,
-  notifyUnknown,
-} from "../services/users/user.service.js";
+import { handleRegistration } from "../services/users/user.service.js";
 import { userRepository } from "../repositories/user.repository.js";
 import { unknownIntentsRepository } from "../repositories/unknown-intents.repository.js";
 import { normalizeBrNumber } from "../lib/phone.js";
 import { sendText } from "../services/whatsapp/whatsapp.js";
+import {
+  fallbackReply,
+  instability,
+  askToRegister,
+  askForPix,
+} from "../services/messaging/voice.js";
+import type { ExtractionResult } from "../services/bills/bill.types.js";
 
 interface EvolutionWebhookBody {
   event?: string;
@@ -54,38 +56,66 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
 
     // Responde 200 já e roda o fluxo em background (Evolution não re-tenta).
     void (async () => {
+      const user = await userRepository.findByPhone(senderPhone);
+      const ctx = { registered: !!user, hasPix: !!user?.pix_key, name: user?.name ?? "" };
+
+      // Extração isolada: se o Gemini cair (503) ou der erro inesperado aqui,
+      // manda instabilidade em vez de deixar o usuário no silêncio.
+      let result: ExtractionResult;
       try {
-        const user = await userRepository.findByPhone(senderPhone);
-        const result = await extractIntent(text, {
-          registered: !!user,
-          hasPix: !!user?.pix_key,
-          name: user?.name ?? "",
-        });
+        result = await extractIntent(text, ctx);
+      } catch (err) {
+        if (err instanceof GeminiUnavailableError) {
+          console.warn("[webhook] gemini unavailable, sending instability message");
+        } else {
+          console.error("[webhook] extraction failed", err);
+        }
+        try {
+          await sendText(senderPhone, instability());
+        } catch (sendErr) {
+          console.error("[webhook] failed to send instability message", sendErr);
+        }
+        return;
+      }
+
+      try {
         switch (result.intent) {
           case "register_account":
-            // O schema do Gemini não garante o objeto do payload — se vier
-            // ausente, trata como mensagem não entendida em vez de quebrar.
-            if (!result.profile) { await notifyUnknown(senderPhone, !!user); break; }
+            if (!result.profile) { await sendText(senderPhone, fallbackReply({ registered: !!user })); break; }
             await handleRegistration(senderPhone, result.profile);
             break;
-          case "create_bill":
-            if (!result.bill) { await notifyUnknown(senderPhone, !!user); break; }
-            if (!user) { await requireRegistrationFirst(senderPhone); break; }
-            if (!user.pix_key) { await requirePixFirst(senderPhone, user.name); break; }
-            await createBillFromExtraction(result.bill, user);
+
+          case "create_bill": {
+            if (!result.bill) { await sendText(senderPhone, fallbackReply({ registered: !!user })); break; }
+            // Intent misto: a pessoa se apresentou E mandou a conta na mesma
+            // mensagem. Registra o cadastro embutido (silencioso) e segue.
+            // Só auto-registra quem ainda está incompleto (sem cadastro ou sem
+            // PIX); pra quem já está completo, a conta vence e um nome/PIX
+            // reapresentado aqui é ignorado (cadastro se corrige em mensagem própria).
+            let owner = user;
+            if (result.profile && (!owner || !owner.pix_key)) {
+              await handleRegistration(senderPhone, result.profile, { continueToBill: true });
+              owner = await userRepository.findByPhone(senderPhone);
+            }
+            if (!owner) { await sendText(senderPhone, askToRegister()); break; }
+            if (!owner.pix_key) { await sendText(senderPhone, askForPix(owner.name)); break; }
+            await createBillFromExtraction(result.bill, owner);
             break;
+          }
+
           case "mark_paid":
-            if (!user) { await requireRegistrationFirst(senderPhone); break; }
+            if (!user) { await sendText(senderPhone, askToRegister()); break; }
             await markPaid(senderPhone, result.payment ?? {});
             break;
+
           default: {
             await unknownIntentsRepository.record({ phone: senderPhone, text, registered: !!user });
             console.log("[unknown-intent]", { phone: senderPhone, text });
-            const softReply = result.intent === 'unknown' ? result.reply?.trim() : undefined;
+            const softReply = result.intent === "unknown" ? result.reply?.trim() : undefined;
             if (softReply && softReply.length <= 300) {
               await sendText(senderPhone, softReply);
             } else {
-              await notifyUnknown(senderPhone, !!user);
+              await sendText(senderPhone, fallbackReply({ registered: !!user }));
             }
           }
         }
