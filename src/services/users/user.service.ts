@@ -23,7 +23,7 @@ export async function handleRegistration(
   phone: string,
   profile: RegisterProfile,
   options: RegistrationOptions = {},
-): Promise<void> {
+): Promise<string> {
   const silent = options.continueToBill === true;
   const existing = await userRepository.findByPhone(phone);
   const name = profile.name?.trim();
@@ -31,8 +31,9 @@ export async function handleRegistration(
 
   if (!existing) {
     if (!name) {
-      if (!silent) await sendText(phone, askForName());
-      return;
+      const message = askForName();
+      if (!silent) await sendText(phone, message);
+      return silent ? '' : message;
     }
     await userRepository.insert({
       phone,
@@ -42,10 +43,9 @@ export async function handleRegistration(
       pix_merchant_city: 'BRASIL',
       created_at: new Date().toISOString(),
     });
-    if (!silent) {
-      await sendText(phone, pixKey ? welcomeReady(name) : welcomeNeedPix(name));
-    }
-    return;
+    const message = pixKey ? welcomeReady(name) : welcomeNeedPix(name);
+    if (!silent) await sendText(phone, message);
+    return silent ? '' : message;
   }
 
   // Update de user existente: correção de nome e/ou coleta lazy de PIX.
@@ -55,9 +55,9 @@ export async function handleRegistration(
     patch.pix_key = pixKey;
     patch.pix_merchant_name = deriveMerchantName(name ?? existing.name);
   }
-  if (Object.keys(patch).length === 0) return;
+  if (Object.keys(patch).length === 0) return '';
   await userRepository.update(phone, patch);
-  if (!silent) {
-    await sendText(phone, pixKey ? pixSaved() : profileUpdated());
-  }
+  const message = pixKey ? pixSaved() : profileUpdated();
+  if (!silent) await sendText(phone, message);
+  return silent ? '' : message;
 }

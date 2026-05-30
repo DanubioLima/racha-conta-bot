@@ -100,14 +100,16 @@ export async function createBillFromExtraction(extracted: ExtractedBill, owner: 
   return bill;
 }
 
-export async function listOpenBills(ownerPhone: string): Promise<void> {
+export async function listOpenBills(ownerPhone: string): Promise<string> {
   const bills = await billRepository.findOpenForOwner(ownerPhone);
   const summary = bills.map((bill) => ({
     description: bill.description,
     total: bill.total_amount,
     pending: bill.participants.filter((p) => p.status === "PENDING").map((p) => p.name),
   }));
-  await sendText(ownerPhone, openBillsList(summary));
+  const message = openBillsList(summary);
+  await sendText(ownerPhone, message);
+  return message;
 }
 
 // ---- mark_paid (manual) ----
@@ -136,23 +138,26 @@ function collectCandidates(openBills: Bill[], input: MarkPaidInput): PaidCandida
   return out;
 }
 
-export async function markPaid(ownerPhone: string, input: MarkPaidInput): Promise<void> {
+export async function markPaid(ownerPhone: string, input: MarkPaidInput): Promise<string> {
   const openBills = await billRepository.findOpenForOwner(ownerPhone);
 
   if (!input.name?.trim() && input.amount == null) {
-    await sendText(ownerPhone, pendingListText("Quem pagou? Em aberto: ", openBills));
-    return;
+    const message = pendingListText("Quem pagou? Em aberto: ", openBills);
+    await sendText(ownerPhone, message);
+    return message;
   }
 
   const candidates = collectCandidates(openBills, input);
   if (candidates.length === 0) {
-    await sendText(ownerPhone, `Não achei ninguém pendente com esse nome/valor. ${pendingListText("Em aberto: ", openBills)}`);
-    return;
+    const message = `Não achei ninguém pendente com esse nome/valor. ${pendingListText("Em aberto: ", openBills)}`;
+    await sendText(ownerPhone, message);
+    return message;
   }
   if (candidates.length > 1) {
     const list = candidates.map((c) => `${c.participantName} (${formatBRL(c.amountDue)})`).join(", ");
-    await sendText(ownerPhone, `Quem pagou? Tenho em aberto: ${list}.`);
-    return;
+    const message = `Quem pagou? Tenho em aberto: ${list}.`;
+    await sendText(ownerPhone, message);
+    return message;
   }
 
   const match = candidates[0]!;
@@ -163,17 +168,22 @@ export async function markPaid(ownerPhone: string, input: MarkPaidInput): Promis
     p.paid_at = new Date().toISOString();
     if (b.participants.every((x) => x.status === "PAID")) b.status = "CLOSED";
   });
-  if (!updated) return;
+  if (!updated) return "";
 
   if (updated.status === "CLOSED") {
-    await sendText(ownerPhone, renderClosedMessage(updated));
-    return;
+    const message = renderClosedMessage(updated);
+    await sendText(ownerPhone, message);
+    return message;
   }
   const paid = updated.participants.find((x) => x.name === match.participantName);
   if (paid) {
-    const msg = renderPaidMessage(updated, paid);
-    if (msg) await sendText(ownerPhone, msg);
+    const message = renderPaidMessage(updated, paid);
+    if (message) {
+      await sendText(ownerPhone, message);
+      return message;
+    }
   }
+  return "";
 }
 
 // ---- reconcile (Cumbuca, owner-scoped) ----

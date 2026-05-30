@@ -47,8 +47,7 @@ export async function dispatchIncomingMessage(senderPhone: string, text: string)
           await say(fallbackReply({ registered: !!user }));
           break;
         }
-        await handleRegistration(senderPhone, result.profile);
-        botTurn = "[registrei seu cadastro]";
+        botTurn = await handleRegistration(senderPhone, result.profile);
         break;
 
       case "create_bill": {
@@ -68,14 +67,12 @@ export async function dispatchIncomingMessage(senderPhone: string, text: string)
 
       case "mark_paid":
         if (!user) { await say(askToRegister()); break; }
-        await markPaid(senderPhone, result.payment ?? {});
-        botTurn = "[registrei o pagamento]";
+        botTurn = await markPaid(senderPhone, result.payment ?? {});
         break;
 
       case "list_bills":
         if (!user) { await say(askToRegister()); break; }
-        await listOpenBills(senderPhone);
-        botTurn = "[mostrei as contas em aberto]";
+        botTurn = await listOpenBills(senderPhone);
         break;
 
       default: {
