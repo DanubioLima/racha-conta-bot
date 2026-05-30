@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { extractIntent, GeminiUnavailableError } from "../services/llm/gemini.js";
-import { createBillFromExtraction, markPaid } from "../services/bills/bill.service.js";
+import { createBillFromExtraction, markPaid, listOpenBills } from "../services/bills/bill.service.js";
 import { handleRegistration } from "../services/users/user.service.js";
 import { userRepository } from "../repositories/user.repository.js";
 import { unknownIntentsRepository } from "../repositories/unknown-intents.repository.js";
@@ -111,6 +111,11 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
           case "mark_paid":
             if (!user) { await sendText(senderPhone, askToRegister()); break; }
             await markPaid(senderPhone, result.payment ?? {});
+            break;
+
+          case "list_bills":
+            if (!user) { await sendText(senderPhone, askToRegister()); break; }
+            await listOpenBills(senderPhone);
             break;
 
           default: {
