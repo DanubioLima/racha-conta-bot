@@ -3,9 +3,12 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 const DATA_DIR = path.resolve('data');
-const DB_PATH = path.join(DATA_DIR, 'slice.db');
+const DB_PATH = process.env.SLICE_DB_PATH ?? path.join(DATA_DIR, 'slice.db');
 
-mkdirSync(DATA_DIR, { recursive: true });
+// Em teste o banco é ':memory:' (sem diretório). Em prod, garante a pasta do arquivo.
+if (DB_PATH !== ':memory:') {
+  mkdirSync(path.dirname(DB_PATH), { recursive: true });
+}
 
 export const db = new Database(DB_PATH);
 
