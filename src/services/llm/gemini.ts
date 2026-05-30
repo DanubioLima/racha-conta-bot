@@ -10,7 +10,7 @@ const ai = new GoogleGenAI({ apiKey: env.geminiApiKey });
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    intent: { type: Type.STRING, enum: ["create_bill", "register_account", "mark_paid", "list_bills", "unknown"] },
+    intent: { type: Type.STRING, enum: ["create_bill", "register_account", "mark_paid", "list_bills", "close_bill", "unknown"] },
     bill: {
       type: Type.OBJECT,
       properties: {
@@ -43,6 +43,15 @@ const RESPONSE_SCHEMA = {
       properties: {
         name: { type: Type.STRING },
         amount: { type: Type.NUMBER },
+        bill: { type: Type.STRING },
+      },
+    },
+    close: {
+      type: Type.OBJECT,
+      properties: {
+        all: { type: Type.BOOLEAN },
+        reference: { type: Type.STRING },
+        confirmed: { type: Type.BOOLEAN },
       },
     },
     reply: { type: Type.STRING },

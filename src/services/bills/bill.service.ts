@@ -9,15 +9,34 @@ import {
   paymentReceived,
   billClosed,
   openBillsList,
+  noOpenBillsToClose,
+  askWhichBill,
+  billNotFound,
+  billClosedManually,
+  billsClosedAll,
+  confirmCloseWithPending,
+  confirmCloseAllWithPending,
+  billPaidWhole,
 } from "../messaging/voice.js";
 import type { User } from "../../repositories/user.repository.js";
 import type {
   Bill,
+  CloseInput,
   ExtractedBill,
   IncomingTransaction,
   MarkPaidInput,
   Participant,
 } from "./bill.types.js";
+
+// Manda a mensagem e devolve ela (pro histórico). DRY pros caminhos de 1 mensagem.
+async function sendAndReturn(ownerPhone: string, message: string): Promise<string> {
+  await sendText(ownerPhone, message);
+  return message;
+}
+
+function describeOpen(bills: Bill[]): string[] {
+  return bills.map((b) => b.description || "conta sem nome");
+}
 
 function buildParticipants(extracted: ExtractedBill, billId: string, owner: User): Participant[] {
   return extracted.participants.map((p, i) => ({
@@ -112,6 +131,50 @@ export async function listOpenBills(ownerPhone: string): Promise<string> {
   return message;
 }
 
+// ---- close_bill (encerrar manualmente; não finge pagamento) ----
+
+export async function closeBills(ownerPhone: string, input: CloseInput): Promise<string> {
+  const open = await billRepository.findOpenForOwner(ownerPhone);
+  if (open.length === 0) return sendAndReturn(ownerPhone, noOpenBillsToClose());
+
+  // Resolve os alvos: todas, ou a(s) que casam a referência, ou a única aberta.
+  let targets: Bill[];
+  if (input.all) {
+    targets = open;
+  } else {
+    const reference = input.reference?.trim();
+    if (!reference) {
+      if (open.length > 1) return sendAndReturn(ownerPhone, askWhichBill(describeOpen(open)));
+      targets = open;
+    } else {
+      const matches = open.filter((b) => b.description.toLowerCase().includes(reference.toLowerCase()));
+      if (matches.length === 0) return sendAndReturn(ownerPhone, billNotFound(reference, describeOpen(open)));
+      if (matches.length > 1) return sendAndReturn(ownerPhone, askWhichBill(describeOpen(matches)));
+      targets = matches;
+    }
+  }
+
+  // Tem pendente e ainda não confirmou? Pede confirmação (encerrar é sticky).
+  const withPending = targets.filter((b) => b.participants.some((p) => p.status === "PENDING"));
+  if (withPending.length > 0 && !input.confirmed) {
+    if (targets.length === 1) {
+      const pendingNames = withPending[0]!.participants.filter((p) => p.status === "PENDING").map((p) => p.name);
+      return sendAndReturn(ownerPhone, confirmCloseWithPending(withPending[0]!.description, pendingNames));
+    }
+    return sendAndReturn(ownerPhone, confirmCloseAllWithPending());
+  }
+
+  for (const bill of targets) {
+    await billRepository.update(bill.id, (b) => {
+      b.status = "CLOSED";
+    });
+  }
+  return sendAndReturn(
+    ownerPhone,
+    targets.length === 1 ? billClosedManually(targets[0]!.description) : billsClosedAll(targets.length),
+  );
+}
+
 // ---- mark_paid (manual) ----
 
 interface PaidCandidate {
@@ -140,6 +203,26 @@ function collectCandidates(openBills: Bill[], input: MarkPaidInput): PaidCandida
 
 export async function markPaid(ownerPhone: string, input: MarkPaidInput): Promise<string> {
   const openBills = await billRepository.findOpenForOwner(ownerPhone);
+
+  // "me pagaram a conta da Netflix" → a CONTA inteira foi paga: quita todos os
+  // pendentes dela (a conta fecha). Diferente de "a Maria me pagou" (pessoa).
+  const billRef = input.bill?.trim();
+  if (billRef) {
+    const matches = openBills.filter((b) => b.description.toLowerCase().includes(billRef.toLowerCase()));
+    if (matches.length === 0) return sendAndReturn(ownerPhone, billNotFound(billRef, describeOpen(openBills)));
+    if (matches.length > 1) return sendAndReturn(ownerPhone, askWhichBill(describeOpen(matches)));
+    const target = matches[0]!;
+    await billRepository.update(target.id, (b) => {
+      for (const p of b.participants) {
+        if (p.status === "PENDING") {
+          p.status = "PAID";
+          p.paid_at = new Date().toISOString();
+        }
+      }
+      if (b.participants.every((x) => x.status === "PAID")) b.status = "CLOSED";
+    });
+    return sendAndReturn(ownerPhone, billPaidWhole(target.description));
+  }
 
   if (!input.name?.trim() && input.amount == null) {
     const message = pendingListText("Quem pagou? Em aberto: ", openBills);

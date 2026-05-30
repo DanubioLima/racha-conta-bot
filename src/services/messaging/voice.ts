@@ -133,3 +133,40 @@ export function openBillsList(
   });
   return `Suas contas em aberto:\n${lines.join('\n')}`;
 }
+
+// ---- Encerrar / quitar conta inteira ----
+
+export function noOpenBillsToClose(): string {
+  return 'Você não tem nenhuma conta em aberto pra fechar.';
+}
+
+export function askWhichBill(openDescriptions: string[]): string {
+  return `Qual conta? Em aberto: ${openDescriptions.join(', ')}.`;
+}
+
+export function billNotFound(reference: string, openDescriptions: string[]): string {
+  return `Não achei a conta "${reference}". Em aberto: ${openDescriptions.join(', ')}.`;
+}
+
+// Encerrar (não finge pagamento). Pré-condição: chamada só quando já confirmado ou
+// sem pendente — quem decide pedir confirmação é o serviço.
+export function billClosedManually(description: string): string {
+  return `Encerrei a conta ${description || 'em aberto'} ✅`;
+}
+
+export function billsClosedAll(count: number): string {
+  const what = count === 1 ? 'sua conta em aberto' : `suas ${count} contas em aberto`;
+  return `Encerrei ${what} ✅`;
+}
+
+export function confirmCloseWithPending(description: string, pendingNames: string[]): string {
+  return `A conta ${description || 'em aberto'} ainda tem ${joinNames(pendingNames)} sem pagar. Fecho assim mesmo? (responde "sim")`;
+}
+
+export function confirmCloseAllWithPending(): string {
+  return 'Tem conta com gente ainda devendo. Fecho TODAS assim mesmo? (responde "sim")';
+}
+
+export function billPaidWhole(description: string): string {
+  return `Boa! A conta ${description || 'em aberto'} foi paga, todo mundo quitou 💸`;
+}
