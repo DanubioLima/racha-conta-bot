@@ -3,6 +3,12 @@ import { billRepository } from "../../repositories/bill.repository.js";
 import { buildPixPayload } from "../pix/pix.js";
 import { sendText } from "../whatsapp/whatsapp.js";
 import { notifyNewBillCreated } from "../../workers/payment-scanner.worker.js";
+import {
+  formatBRL,
+  billCreatedHeadline,
+  paymentReceived,
+  billClosed,
+} from "../messaging/voice.js";
 import type { User } from "../../repositories/user.repository.js";
 import type {
   Bill,
@@ -11,10 +17,6 @@ import type {
   MarkPaidInput,
   Participant,
 } from "./bill.types.js";
-
-function formatBRL(value: number): string {
-  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
 
 function buildParticipants(extracted: ExtractedBill, billId: string, owner: User): Participant[] {
   return extracted.participants.map((p, i) => ({
@@ -33,12 +35,14 @@ function buildParticipants(extracted: ExtractedBill, billId: string, owner: User
 }
 
 async function sendBillCreatedMessages(bill: Bill): Promise<void> {
-  const names = bill.participants.map((p) => p.name).join(" e ");
   await sendText(
     bill.owner_phone,
-    `Anotei sua conta de ${formatBRL(bill.total_amount)} em "${bill.description}". ` +
-      `Cabe ${formatBRL(bill.amount_per_person)} pra cada um. ` +
-      `Mando o PIX de cada um (${names}) a seguir.`,
+    billCreatedHeadline({
+      total: bill.total_amount,
+      description: bill.description,
+      amountPerPerson: bill.amount_per_person,
+      participantNames: bill.participants.map((p) => p.name),
+    }),
   );
   for (const participant of bill.participants) {
     await sendText(bill.owner_phone, participant.pix_payload);
@@ -48,12 +52,15 @@ async function sendBillCreatedMessages(bill: Bill): Promise<void> {
 function renderPaidMessage(bill: Bill, paid: Participant): string {
   const remaining = bill.participants.filter((p) => p.status === "PENDING");
   if (remaining.length === 0) return "";
-  const names = remaining.map((p) => p.name).join(", ");
-  return `${paid.name} acabou de pagar! ${formatBRL(paid.amount_due)} 💰 Ainda falta: ${names}.`;
+  return paymentReceived({
+    paidName: paid.name,
+    paidAmount: paid.amount_due,
+    remainingNames: remaining.map((p) => p.name),
+  });
 }
 
 function renderClosedMessage(bill: Bill): string {
-  return `Fechou! Todo mundo pagou a conta de "${bill.description}". Saldo zerado 💸`;
+  return billClosed(bill.description);
 }
 
 function pendingListText(prefix: string, openBills: Bill[]): string {
