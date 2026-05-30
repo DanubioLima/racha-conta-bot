@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { env } from "../../config/env.js";
 import { SYSTEM_INSTRUCTION } from "./prompt.js";
 
@@ -151,7 +151,7 @@ export async function extractIntent(
     textLen: text.length, registered: ctx.registered, hasPix: ctx.hasPix, historyTurns: history.length,
   });
   const request = {
-    model: "gemini-2.5-flash-lite",
+    model: "gemini-3.1-flash-lite",
     contents: buildContents(text, history),
     config: {
       systemInstruction: SYSTEM_INSTRUCTION + buildContextNote(ctx),
@@ -160,6 +160,10 @@ export async function extractIntent(
       // 0.4 dá vida ao "reply" sem arriscar a extração — o responseSchema prende
       // os campos estruturados, e os números vêm do texto, não são amostrados.
       temperature: 0.4,
+      // Gemini 3.x assume thinking HIGH por padrão; pra um classificador JSON isso
+      // só adiciona latência/custo. MINIMAL mantém rápido (UX WhatsApp). Subir pra
+      // LOW se o smoke mostrar que reasoning ajuda (ex: ambiguidade do headcount).
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
     },
   };
 
