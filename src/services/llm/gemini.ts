@@ -3,6 +3,7 @@ import { env } from "../../config/env.js";
 import { SYSTEM_INSTRUCTION } from "./prompt.js";
 
 import type { ExtractionResult } from "../bills/bill.types.js";
+import type { HistoryTurn } from "../../repositories/conversation.repository.js";
 
 const ai = new GoogleGenAI({ apiKey: env.geminiApiKey });
 
@@ -126,14 +127,32 @@ function buildContextNote(ctx: UserContext): string {
   return `\n\nCONTEXTO DO REMETENTE: cadastrado${nome}, já sabe usar. Responda natural seguindo a persona; NÃO empurre tutorial nem repita instrução.`;
 }
 
-export async function extractIntent(text: string, ctx: UserContext): Promise<ExtractionResult> {
+// Monta o array de contents do Gemini: histórico (bot→model) + a mensagem atual.
+export function buildContents(
+  text: string,
+  history: HistoryTurn[],
+): { role: "user" | "model"; parts: { text: string }[] }[] {
+  const past = history.map((turn) => ({
+    role: turn.role === "bot" ? ("model" as const) : ("user" as const),
+    parts: [{ text: turn.text }],
+  }));
+  return [...past, { role: "user" as const, parts: [{ text }] }];
+}
+
+export async function extractIntent(
+  text: string,
+  ctx: UserContext,
+  history: HistoryTurn[] = [],
+): Promise<ExtractionResult> {
   // Não loga o conteúdo cru (texto, resposta, parsed): a mensagem pode trazer
   // chave PIX e o parsed traz profile.pix_key — PII em log que rotaciona/é
   // exportado. Loga só metadados, na mesma linha da redação do whatsapp.ts.
-  console.log("[gemini] extracting", { textLen: text.length, registered: ctx.registered, hasPix: ctx.hasPix });
+  console.log("[gemini] extracting", {
+    textLen: text.length, registered: ctx.registered, hasPix: ctx.hasPix, historyTurns: history.length,
+  });
   const request = {
     model: "gemini-2.5-flash-lite",
-    contents: [{ role: "user", parts: [{ text }] }],
+    contents: buildContents(text, history),
     config: {
       systemInstruction: SYSTEM_INSTRUCTION + buildContextNote(ctx),
       responseMimeType: "application/json",
