@@ -63,4 +63,16 @@ db.exec(`
     text       TEXT NOT NULL,
     registered INTEGER NOT NULL
   );
+
+  -- phone SEM FK pra users(phone) de propósito: o dispatcher grava turno pra
+  -- qualquer sender, inclusive ANTES do cadastro (ex: "oi"/"liste contas" de quem
+  -- ainda não se registrou). Um FK quebraria esse caso.
+  CREATE TABLE IF NOT EXISTS conversation_turns (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone TEXT NOT NULL,
+    role  TEXT NOT NULL,
+    text  TEXT NOT NULL,
+    at    TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_conversation_phone ON conversation_turns(phone, id);
 `);
