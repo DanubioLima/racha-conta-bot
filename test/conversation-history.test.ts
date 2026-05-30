@@ -93,6 +93,8 @@ describe('histórico de conversa', () => {
     expect(turns[1]!.role).toBe('bot');
     expect(turns[1]!.text).toContain('Quem pagou?');
     expect(turns[1]!.text).not.toContain('[registrei');
+    // guarda-corpo: texto de mark_paid no histórico nunca carrega PIX
+    expect(turns[1]!.text).not.toMatch(/br\.gov\.bcb\.pix/i);
   });
 
   it('instabilidade do Gemini não grava histórico', async () => {
