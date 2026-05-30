@@ -41,7 +41,7 @@ export interface MarkPaidInput {
 }
 
 export type ExtractionResult =
-  | { intent: 'create_bill'; bill: ExtractedBill }
+  | { intent: 'create_bill'; bill: ExtractedBill; profile?: RegisterProfile }
   | { intent: 'register_account'; profile: RegisterProfile }
   | { intent: 'mark_paid'; payment: MarkPaidInput }
   | { intent: 'unknown'; reply?: string };
