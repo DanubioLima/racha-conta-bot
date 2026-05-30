@@ -127,7 +127,10 @@ function buildContextNote(ctx: UserContext): string {
 }
 
 export async function extractIntent(text: string, ctx: UserContext): Promise<ExtractionResult> {
-  console.log("[gemini] extracting", { text });
+  // Não loga o conteúdo cru (texto, resposta, parsed): a mensagem pode trazer
+  // chave PIX e o parsed traz profile.pix_key — PII em log que rotaciona/é
+  // exportado. Loga só metadados, na mesma linha da redação do whatsapp.ts.
+  console.log("[gemini] extracting", { textLen: text.length, registered: ctx.registered, hasPix: ctx.hasPix });
   const request = {
     model: "gemini-2.5-flash-lite",
     contents: [{ role: "user", parts: [{ text }] }],
@@ -148,14 +151,14 @@ export async function extractIntent(text: string, ctx: UserContext): Promise<Ext
   for (let attempt = 0; attempt < 2; attempt++) {
     const response = await generateWithRetry(request);
     const raw = response.text;
-    console.log("[gemini] raw response", { raw });
+    console.log("[gemini] raw response", { rawLen: raw?.length ?? 0 });
     if (!raw) continue;
     try {
       const parsed = JSON.parse(raw) as ExtractionResult;
-      console.log("[gemini] parsed", parsed);
+      console.log("[gemini] parsed", { intent: parsed.intent, fields: Object.keys(parsed).filter((k) => k !== "intent") });
       return parsed;
     } catch (error) {
-      console.error("[gemini] failed to parse JSON", { raw, error });
+      console.error("[gemini] failed to parse JSON", { rawLen: raw.length, error });
     }
   }
   return { intent: "unknown" };
