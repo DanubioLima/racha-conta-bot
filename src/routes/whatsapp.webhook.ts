@@ -1,18 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { extractIntent, GeminiUnavailableError } from "../services/llm/gemini.js";
-import { createBillFromExtraction, markPaid, listOpenBills } from "../services/bills/bill.service.js";
-import { handleRegistration } from "../services/users/user.service.js";
-import { userRepository } from "../repositories/user.repository.js";
-import { unknownIntentsRepository } from "../repositories/unknown-intents.repository.js";
 import { normalizeBrNumber } from "../lib/phone.js";
-import { sendText } from "../services/whatsapp/whatsapp.js";
-import {
-  fallbackReply,
-  instability,
-  askToRegister,
-  askForPix,
-} from "../services/messaging/voice.js";
-import type { ExtractionResult } from "../services/bills/bill.types.js";
+import { dispatchIncomingMessage } from "../services/dispatch/dispatch-message.js";
 
 interface EvolutionWebhookBody {
   event?: string;
@@ -55,89 +43,9 @@ export function registerWhatsAppWebhook(app: FastifyInstance): void {
     if (!text) return reply.code(200).send({ ok: true, ignored: "no-text" });
 
     // Responde 200 já e roda o fluxo em background (Evolution não re-tenta).
-    void (async () => {
-      const user = await userRepository.findByPhone(senderPhone);
-      const ctx = { registered: !!user, hasPix: !!user?.pix_key, name: user?.name ?? "" };
-
-      // Extração isolada: se o Gemini cair (503) ou der erro inesperado aqui,
-      // manda instabilidade em vez de deixar o usuário no silêncio.
-      let result: ExtractionResult;
-      try {
-        result = await extractIntent(text, ctx);
-      } catch (err) {
-        if (err instanceof GeminiUnavailableError) {
-          console.warn("[webhook] gemini unavailable, sending instability message");
-        } else {
-          console.error("[webhook] extraction failed", err);
-        }
-        try {
-          await sendText(senderPhone, instability());
-        } catch (sendErr) {
-          console.error("[webhook] failed to send instability message", sendErr);
-        }
-        return;
-      }
-
-      try {
-        switch (result.intent) {
-          case "register_account":
-            // profile ausente OU vazio ({}) → não há nome nem PIX pra registrar;
-            // trata como conversa em vez de cair em silêncio (patch vazio).
-            if (!result.profile?.name && !result.profile?.pix_key) {
-              await sendText(senderPhone, fallbackReply({ registered: !!user }));
-              break;
-            }
-            await handleRegistration(senderPhone, result.profile);
-            break;
-
-          case "create_bill": {
-            if (!result.bill) { await sendText(senderPhone, fallbackReply({ registered: !!user })); break; }
-            // Intent misto: a pessoa se apresentou E mandou a conta na mesma
-            // mensagem. Registra o cadastro embutido (silencioso) e segue.
-            // Só auto-registra quem ainda está incompleto (sem cadastro ou sem
-            // PIX); pra quem já está completo, a conta vence e um nome/PIX
-            // reapresentado aqui é ignorado (cadastro se corrige em mensagem própria).
-            let owner = user;
-            if (result.profile && (!owner || !owner.pix_key)) {
-              await handleRegistration(senderPhone, result.profile, { continueToBill: true });
-              owner = await userRepository.findByPhone(senderPhone);
-            }
-            if (!owner) { await sendText(senderPhone, askToRegister()); break; }
-            if (!owner.pix_key) { await sendText(senderPhone, askForPix(owner.name)); break; }
-            await createBillFromExtraction(result.bill, owner);
-            break;
-          }
-
-          case "mark_paid":
-            if (!user) { await sendText(senderPhone, askToRegister()); break; }
-            await markPaid(senderPhone, result.payment ?? {});
-            break;
-
-          case "list_bills":
-            if (!user) { await sendText(senderPhone, askToRegister()); break; }
-            await listOpenBills(senderPhone);
-            break;
-
-          default: {
-            const softReply = result.intent === "unknown" ? result.reply?.trim() : undefined;
-            if (softReply && softReply.length <= 300) {
-              await sendText(senderPhone, softReply);
-            } else {
-              // Só registra em unknown-intents quando NÃO há reply utilizável: é o
-              // caso que a tabela existe pra capturar (Gemini não soube responder).
-              // Saudação/obrigado/off-topic já viram reply por design — gravá-los
-              // poluiria a analytics. Loga só metadados (texto pode ter PII).
-              await unknownIntentsRepository.record({ phone: senderPhone, text, registered: !!user });
-              console.log("[unknown-intent recorded]", { phone: senderPhone, textLen: text.length });
-              await sendText(senderPhone, fallbackReply({ registered: !!user }));
-            }
-          }
-        }
-        console.log("[webhook] flow finished ok");
-      } catch (err) {
-        console.error("[webhook] flow failed", err);
-      }
-    })();
+    void dispatchIncomingMessage(senderPhone, text).catch((err) =>
+      console.error("[webhook] dispatch failed", err),
+    );
 
     return reply.code(200).send({ ok: true });
   });
