@@ -15,7 +15,7 @@ vi.mock('../src/services/llm/gemini.js', async (importOriginal) => {
 import { extractIntent, GeminiUnavailableError } from '../src/services/llm/gemini.js';
 import { dispatchIncomingMessage } from '../src/services/dispatch/dispatch-message.js';
 import { conversationRepository } from '../src/repositories/conversation.repository.js';
-import { resetDb, registerUser } from './setup.js';
+import { resetDb, registerUser, insertOpenBill } from './setup.js';
 
 const extractIntentMock = vi.mocked(extractIntent);
 const PHONE = '558899990000';
@@ -76,6 +76,23 @@ describe('histórico de conversa', () => {
       { role: 'user', text: 'paguei na pizza' },
       { role: 'bot', text: 'quanto foi?' },
     ]);
+  });
+
+  it('mark_paid ambíguo grava a pergunta real no histórico (não um resumo)', async () => {
+    // ARRANGE
+    await registerUser(PHONE);
+    await insertOpenBill(PHONE, { id: 'b1', description: 'Bar', total: 40,
+      participants: [{ name: 'Ana', amount_due: 20 }, { name: 'Ana Paula', amount_due: 20 }] });
+    extractIntentMock.mockResolvedValue({ intent: 'mark_paid', payment: { name: 'ana' } });
+
+    // ACT
+    await dispatchIncomingMessage(PHONE, 'a ana me pagou');
+
+    // ASSERT — o turno do bot é a pergunta de verdade, não um resumo genérico
+    const turns = await conversationRepository.recent(PHONE, 8);
+    expect(turns[1]!.role).toBe('bot');
+    expect(turns[1]!.text).toContain('Quem pagou?');
+    expect(turns[1]!.text).not.toContain('[registrei');
   });
 
   it('instabilidade do Gemini não grava histórico', async () => {
