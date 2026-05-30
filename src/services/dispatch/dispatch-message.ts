@@ -88,8 +88,9 @@ export async function dispatchIncomingMessage(senderPhone: string, text: string)
     }
 
     // Grava o turno só em sucesso (um throw acima pula isto e cai no catch).
+    // botTurn vazio = no-op raro (re-marcar pago, update vazio): não grava turno mudo.
     await conversationRepository.append(senderPhone, "user", text);
-    await conversationRepository.append(senderPhone, "bot", botTurn);
+    if (botTurn) await conversationRepository.append(senderPhone, "bot", botTurn);
     console.log("[dispatch] flow finished ok");
   } catch (err) {
     console.error("[dispatch] flow failed", err);
