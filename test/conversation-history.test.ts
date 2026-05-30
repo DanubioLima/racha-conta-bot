@@ -15,6 +15,7 @@ vi.mock('../src/services/llm/gemini.js', async (importOriginal) => {
 import { extractIntent, GeminiUnavailableError } from '../src/services/llm/gemini.js';
 import { dispatchIncomingMessage } from '../src/services/dispatch/dispatch-message.js';
 import { conversationRepository } from '../src/repositories/conversation.repository.js';
+import { billRepository } from '../src/repositories/bill.repository.js';
 import { resetDb, registerUser, insertOpenBill } from './setup.js';
 
 const extractIntentMock = vi.mocked(extractIntent);
@@ -107,5 +108,21 @@ describe('histórico de conversa', () => {
 
     // ASSERT
     expect(await conversationRepository.recent(PHONE, 8)).toHaveLength(0);
+  });
+
+  it('close_bill (confirmado) encerra a conta e grava no histórico', async () => {
+    // ARRANGE
+    await registerUser(PHONE);
+    await insertOpenBill(PHONE, { id: 'b1', description: 'Pizza', total: 40,
+      participants: [{ name: 'João', amount_due: 20 }] });
+    extractIntentMock.mockResolvedValue({ intent: 'close_bill', close: { reference: 'pizza', confirmed: true } });
+
+    // ACT
+    await dispatchIncomingMessage(PHONE, 'sim, pode fechar a pizza');
+
+    // ASSERT
+    expect(await billRepository.findOpenForOwner(PHONE)).toHaveLength(0);
+    const turns = await conversationRepository.recent(PHONE, 8);
+    expect(turns[1]!.text).toContain('Encerrei a conta Pizza');
   });
 });
