@@ -78,8 +78,9 @@ export function billCreatedHeadline(params: {
   participantNames: string[];
 }): string {
   const names = joinNames(params.participantNames);
+  const where = params.description ? ` em ${params.description}` : '';
   return (
-    `Anotei: ${formatBRL(params.total)} em ${params.description}, ` +
+    `Anotei: ${formatBRL(params.total)}${where}, ` +
     `${formatBRL(params.amountPerPerson)} pra cada. Te mando o PIX de ${names} 👇`
   );
 }
@@ -98,5 +99,31 @@ export function paymentReceived(params: {
 }
 
 export function billClosed(description: string): string {
-  return `Fechou! Todo mundo pagou ${description}. Saldo zerado 💸`;
+  const what = description ? description : 'a conta';
+  return `Fechou! Todo mundo pagou ${what}. Saldo zerado 💸`;
+}
+
+// ---- Listagem de contas em aberto ----
+
+// Resumo compacto das contas ABERTAS do dono (1 linha por conta). Recebe um shape
+// mínimo pra não acoplar voice.ts ao tipo Bill. Normalmente toda conta OPEN tem ao
+// menos 1 pendente, mas uma conta sem participantes (ex: "divide uma conta de 20"
+// sem citar ninguém) fica OPEN com pending vazio — nesse caso, só o rótulo, sem o
+// "(faltam 0: )" quebrado.
+export function openBillsList(
+  bills: { description: string; total: number; pending: string[] }[],
+): string {
+  if (bills.length === 0) return 'Você não tem nenhuma conta em aberto 🎉';
+  const lines = bills.map((bill) => {
+    const label = bill.description
+      ? `${bill.description} — ${formatBRL(bill.total)}`
+      : formatBRL(bill.total);
+    if (bill.pending.length === 0) return `• ${label}`;
+    const missing =
+      bill.pending.length === 1
+        ? `falta ${bill.pending[0]}`
+        : `faltam ${bill.pending.length}: ${bill.pending.join(', ')}`;
+    return `• ${label} (${missing})`;
+  });
+  return `Suas contas em aberto:\n${lines.join('\n')}`;
 }
