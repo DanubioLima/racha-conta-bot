@@ -138,9 +138,9 @@ export async function extractIntent(text: string, ctx: UserContext): Promise<Ext
       systemInstruction: SYSTEM_INSTRUCTION + buildContextNote(ctx),
       responseMimeType: "application/json",
       responseSchema: RESPONSE_SCHEMA,
-      // 0.3 dá vida ao "reply" sem arriscar a extração — o responseSchema prende
+      // 0.4 dá vida ao "reply" sem arriscar a extração — o responseSchema prende
       // os campos estruturados, e os números vêm do texto, não são amostrados.
-      temperature: 0.3,
+      temperature: 0.4,
     },
   };
 
