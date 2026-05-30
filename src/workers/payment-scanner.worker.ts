@@ -3,6 +3,7 @@ import { processedTransactionsRepository } from '../repositories/processed-trans
 import { tryReconcile } from '../services/bills/bill.service.js';
 import { createLedgerSource } from '../services/ledger/factory.js';
 import { sendText } from '../services/whatsapp/whatsapp.js';
+import { billExpired } from '../services/messaging/voice.js';
 import { env } from '../config/env.js';
 import { normalizeBrNumber } from '../lib/phone.js';
 import type { Bill } from '../services/bills/bill.types.js';
@@ -79,15 +80,11 @@ async function expireBillsOlderThanSevenDays(openBills: Bill[]): Promise<void> {
       continue;
     }
 
-    const pending = expired.participants.filter((p) => p.status === 'PENDING');
-    const pendingNames = pending.map((p) => p.name).join(', ');
+    const pendingNames = expired.participants
+      .filter((p) => p.status === 'PENDING')
+      .map((p) => p.name);
     console.log('[scanner] expired bill', { id: expired.id, description: expired.description });
-    await sendText(
-      expired.owner_phone,
-      pending.length > 0
-        ? `⏱️ Conta "${expired.description}" expirou após 7 dias. Pendentes: ${pendingNames}.`
-        : `⏱️ Conta "${expired.description}" expirou após 7 dias.`,
-    );
+    await sendText(expired.owner_phone, billExpired(expired.description, pendingNames));
   }
 }
 
