@@ -8,6 +8,7 @@ import {
   billCreatedHeadline,
   paymentReceived,
   billClosed,
+  openBillsList,
 } from "../messaging/voice.js";
 import type { User } from "../../repositories/user.repository.js";
 import type {
@@ -97,6 +98,16 @@ export async function createBillFromExtraction(extracted: ExtractedBill, owner: 
   }
   notifyNewBillCreated();
   return bill;
+}
+
+export async function listOpenBills(ownerPhone: string): Promise<void> {
+  const bills = await billRepository.findOpenForOwner(ownerPhone);
+  const summary = bills.map((bill) => ({
+    description: bill.description,
+    total: bill.total_amount,
+    pending: bill.participants.filter((p) => p.status === "PENDING").map((p) => p.name),
+  }));
+  await sendText(ownerPhone, openBillsList(summary));
 }
 
 // ---- mark_paid (manual) ----
