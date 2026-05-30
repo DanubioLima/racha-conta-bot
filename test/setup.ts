@@ -7,7 +7,8 @@ import type { Bill } from '../src/services/bills/bill.types.js';
 export function resetDb(): void {
   db.exec(
     'DELETE FROM participants; DELETE FROM bills; DELETE FROM users; ' +
-      'DELETE FROM processed_transactions; DELETE FROM unknown_intents;',
+      'DELETE FROM processed_transactions; DELETE FROM unknown_intents; ' +
+      'DELETE FROM conversation_turns;',
   );
 }
 
