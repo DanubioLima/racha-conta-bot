@@ -1,5 +1,5 @@
 import { extractIntent, GeminiUnavailableError } from "../llm/gemini.js";
-import { createBillFromExtraction, markPaid, listOpenBills } from "../bills/bill.service.js";
+import { createBillFromExtraction, markPaid, listOpenBills, closeBills } from "../bills/bill.service.js";
 import { handleRegistration } from "../users/user.service.js";
 import { userRepository } from "../../repositories/user.repository.js";
 import { unknownIntentsRepository } from "../../repositories/unknown-intents.repository.js";
@@ -73,6 +73,11 @@ export async function dispatchIncomingMessage(senderPhone: string, text: string)
       case "list_bills":
         if (!user) { await say(askToRegister()); break; }
         botTurn = await listOpenBills(senderPhone);
+        break;
+
+      case "close_bill":
+        if (!user) { await say(askToRegister()); break; }
+        botTurn = await closeBills(senderPhone, result.close ?? {});
         break;
 
       default: {
