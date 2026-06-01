@@ -10,14 +10,11 @@ export function normalizeBrNumber(num: string): string {
   return digits;
 }
 
-// Inverso do normalizeBrNumber: a Twilio entrega/exige o E.164 completo COM o nono
-// dígito (whatsapp:+5588994963067), mas guardamos a forma sem o 9. Re-insere o 9
-// depois do DDD e prefixa o endereço WhatsApp. BR-only por design (o app é todo BR).
-export function toBrazilWhatsAppAddress(normalized: string): string {
-  const digits = normalized.replace(/\D/g, "");
-  const e164 =
-    digits.length === 12 && digits.startsWith("55")
-      ? digits.slice(0, 4) + "9" + digits.slice(4)
-      : digits;
-  return `whatsapp:+${e164}`;
+// Endereço WhatsApp pra resposta. No Brasil o wa_id roteia SEM o nono dígito
+// (+558898082034, não +5588998082034) — é a mesma razão de existir o
+// normalizeBrNumber. Respondemos sempre ao wa_id normalizado; reconstruir o 9
+// manda pra um endereço que não recebe (no Sandbox dá 63015 "número não entrou";
+// em produção, não-entrega silenciosa). BR-only por design.
+export function toBrazilWhatsAppAddress(num: string): string {
+  return `whatsapp:+${normalizeBrNumber(num)}`;
 }

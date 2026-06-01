@@ -2,19 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { normalizeBrNumber, toBrazilWhatsAppAddress } from '../src/lib/phone.js';
 
 describe('toBrazilWhatsAppAddress', () => {
-  it('re-insere o nono dígito e prefixa whatsapp:+ na forma normalizada (12 dígitos)', () => {
-    // 558894963067 = forma interna (9 dropado). Twilio quer o E.164 completo.
-    expect(toBrazilWhatsAppAddress('558894963067')).toBe('whatsapp:+5588994963067');
+  it('responde ao wa_id SEM o nono dígito (forma BR roteável)', () => {
+    // WhatsApp BR roteia pelo wa_id sem o 9 — mandar pro +9 cai em número que
+    // "não existe"/não entrou no Sandbox (erro 63015).
+    expect(toBrazilWhatsAppAddress('558898082034')).toBe('whatsapp:+558898082034');
   });
 
-  it('faz round-trip com normalizeBrNumber (E.164 → normaliza → denormaliza → E.164)', () => {
-    const e164 = '5588994963067';
-    const normalized = normalizeBrNumber(e164);
-    expect(normalized).toBe('558894963067');
-    expect(toBrazilWhatsAppAddress(normalized)).toBe(`whatsapp:+${e164}`);
+  it('dropa o 9 antes de montar o endereço, se vier o E.164 completo (com 9)', () => {
+    expect(toBrazilWhatsAppAddress('5588998082034')).toBe('whatsapp:+558898082034');
   });
 
-  it('não duplica o 9 quando já recebe o E.164 completo (13 dígitos)', () => {
-    expect(toBrazilWhatsAppAddress('5588994963067')).toBe('whatsapp:+5588994963067');
+  it('usa a MESMA forma da identidade interna (normalizeBrNumber)', () => {
+    const e164ComNove = '5588998082034';
+    const identidade = normalizeBrNumber(e164ComNove); // 558898082034
+    expect(toBrazilWhatsAppAddress(identidade)).toBe(`whatsapp:+${identidade}`);
   });
 });
