@@ -7,7 +7,7 @@ import type { HistoryTurn } from "../../repositories/conversation.repository.js"
 
 const ai = new GoogleGenAI({ apiKey: env.geminiApiKey });
 
-const RESPONSE_SCHEMA = {
+export const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     intent: { type: Type.STRING, enum: ["create_bill", "register_account", "mark_paid", "list_bills", "close_bill", "unknown"] },
@@ -181,9 +181,11 @@ export async function extractIntent(
   // generateWithRetry, ao contrário, lança GeminiUnavailableError quando o
   // transporte falha de vez (503 etc.); isso sobe pro dispatcher virar instabilidade.
   for (let attempt = 0; attempt < 2; attempt++) {
+    const startedAt = performance.now();
     const response = await generateWithRetry(request);
+    const ms = Math.round(performance.now() - startedAt);
     const raw = response.text;
-    console.log("[gemini] raw response", { rawLen: raw?.length ?? 0 });
+    console.log("[gemini] raw response", { rawLen: raw?.length ?? 0, ms, model: request.model });
     if (!raw) continue;
     try {
       const parsed = JSON.parse(raw) as ExtractionResult;

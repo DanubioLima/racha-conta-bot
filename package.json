@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "cumbuca:link": "tsx src/bin/cumbuca-link.ts",
-    "seed:danubio": "tsx src/bin/seed-danubio-user.ts"
+    "seed:danubio": "tsx src/bin/seed-danubio-user.ts",
+    "bench:gemini": "tsx src/bin/bench-gemini.ts"
   },
   "dependencies": {
     "@fastify/formbody": "^8.0.2",
