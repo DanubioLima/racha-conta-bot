@@ -5,7 +5,6 @@ const { sentMessages } = vi.hoisted(() => ({ sentMessages: [] as { to: string; t
 
 vi.mock('../src/services/whatsapp/whatsapp.js', () => ({
   sendText: vi.fn(async (to: string, text: string) => { sentMessages.push({ to, text }); }),
-  sendImage: vi.fn(),
 }));
 // Neutraliza o worker de reconciliação (timers/cumbuca) que createBillFromExtraction aciona.
 vi.mock('../src/workers/payment-scanner.worker.js', () => ({ notifyNewBillCreated: vi.fn() }));

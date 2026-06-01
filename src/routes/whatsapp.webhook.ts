@@ -1,48 +1,60 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import twilio from "twilio";
+import { env } from "../config/env.js";
 import { normalizeBrNumber } from "../lib/phone.js";
 import { dispatchIncomingMessage } from "../services/dispatch/dispatch-message.js";
 
-interface EvolutionWebhookBody {
-  event?: string;
-  data?: {
-    key?: { remoteJid?: string; fromMe?: boolean; id?: string };
-    message?: { conversation?: string; extendedTextMessage?: { text?: string } };
-  };
+// A Twilio entrega o webhook como form-urlencoded. Só estes campos interessam pro
+// fluxo; o resto (MessageSid, ProfileName…) é ignorado.
+interface TwilioWebhookBody {
+  From?: string; // "whatsapp:+5588994963067"
+  Body?: string;
 }
 
-function extractText(body: EvolutionWebhookBody): string | null {
-  const msg = body?.data?.message;
-  return msg?.conversation ?? msg?.extendedTextMessage?.text ?? null;
+function extractSender(body: TwilioWebhookBody): string | null {
+  if (!body.From) return null;
+  return normalizeBrNumber(body.From); // limpa "whatsapp:+" e o nono dígito
 }
 
-function extractSender(body: EvolutionWebhookBody): string | null {
-  const jid = body?.data?.key?.remoteJid;
-  if (!jid) return null;
-  const raw = jid.split("@")[0];
-  return raw ? normalizeBrNumber(raw) : null;
+// A assinatura do Twilio é calculada sobre a URL PÚBLICA + os params do POST. Atrás
+// do Traefik a request chega como http/host interno, então reconstruímos a URL
+// pública pelos headers x-forwarded-* (fallback pro que a própria request reporta).
+function publicUrl(request: FastifyRequest): string {
+  const proto = (request.headers["x-forwarded-proto"] as string) ?? request.protocol;
+  const host = (request.headers["x-forwarded-host"] as string) ?? request.headers.host;
+  return `${proto}://${host}${request.url}`;
+}
+
+function hasValidSignature(request: FastifyRequest): boolean {
+  const signature = request.headers["x-twilio-signature"];
+  if (typeof signature !== "string") return false;
+  return twilio.validateRequest(
+    env.twilioAuthToken,
+    signature,
+    publicUrl(request),
+    (request.body ?? {}) as Record<string, string>,
+  );
 }
 
 export function registerWhatsAppWebhook(app: FastifyInstance): void {
   app.post("/webhooks/whatsapp", async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = request.body as EvolutionWebhookBody;
-    console.log("[webhook] event", {
-      event: body?.event,
-      fromMe: body?.data?.key?.fromMe,
-      remoteJid: body?.data?.key?.remoteJid,
-    });
-
-    // Echoes do próprio bot chegam com fromMe=true — ignora.
-    if (body?.data?.key?.fromMe) {
-      return reply.code(200).send({ ok: true, ignored: "from-me" });
+    // Webhook é público e dispara fluxo de dinheiro: sem assinatura válida da Twilio,
+    // qualquer um forjaria mensagem. É o guarda-corpo de segurança da rota.
+    if (!hasValidSignature(request)) {
+      console.warn("[webhook] assinatura Twilio inválida");
+      return reply.code(403).send({ ok: false, error: "invalid-signature" });
     }
 
+    const body = (request.body ?? {}) as TwilioWebhookBody;
     const senderPhone = extractSender(body);
     if (!senderPhone) return reply.code(200).send({ ok: true, ignored: "no-sender" });
 
-    const text = extractText(body);
+    const text = body.Body;
     if (!text) return reply.code(200).send({ ok: true, ignored: "no-text" });
 
-    // Responde 200 já e roda o fluxo em background (Evolution não re-tenta).
+    console.log("[webhook] mensagem recebida", { from: senderPhone, preview: text.slice(0, 40) });
+
+    // Responde 200 já e roda o fluxo em background (a Twilio re-tenta em erro/timeout).
     void dispatchIncomingMessage(senderPhone, text).catch((err) =>
       console.error("[webhook] dispatch failed", err),
     );

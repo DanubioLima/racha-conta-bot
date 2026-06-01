@@ -1,9 +1,9 @@
 import 'dotenv/config';
 
 const required = [
-  'EVOLUTION_API_URL',
-  'EVOLUTION_API_KEY',
-  'EVOLUTION_INSTANCE',
+  'TWILIO_ACCOUNT_SID',
+  'TWILIO_AUTH_TOKEN',
+  'TWILIO_WHATSAPP_FROM',
   'USER_WHATSAPP_NUMBER',
   'GEMINI_API_KEY',
   'PIX_KEY',
@@ -26,9 +26,9 @@ if (ledgerSourceRaw !== 'cumbuca' && ledgerSourceRaw !== 'mock') {
 export const env = {
   port: Number(process.env.PORT ?? 3000),
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? `http://localhost:${Number(process.env.PORT ?? 3000)}`,
-  evolutionApiUrl: process.env.EVOLUTION_API_URL!,
-  evolutionApiKey: process.env.EVOLUTION_API_KEY!,
-  evolutionInstance: process.env.EVOLUTION_INSTANCE!,
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID!,
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN!,
+  twilioWhatsAppFrom: process.env.TWILIO_WHATSAPP_FROM!,
   userWhatsappNumber: process.env.USER_WHATSAPP_NUMBER!,
   geminiApiKey: process.env.GEMINI_API_KEY!,
   pixKey: process.env.PIX_KEY!,
