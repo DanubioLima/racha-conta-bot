@@ -1,13 +1,16 @@
-import axios from 'axios';
+import twilio from 'twilio';
 import { env } from '../../config/env.js';
+import { toBrazilWhatsAppAddress } from '../../lib/phone.js';
 
-// Cliente fino do WhatsApp. Provider real é Evolution API + Baileys — quem está
-// fora deste módulo fala em termos de "manda uma mensagem".
-const client = axios.create({
-  baseURL: env.evolutionApiUrl,
-  headers: { 'Content-Type': 'application/json', apikey: env.evolutionApiKey },
-  timeout: 10_000,
-});
+// Cliente fino do WhatsApp. Provider real é a Twilio (API oficial). Quem está fora
+// deste módulo fala em termos de "manda uma mensagem" e passa o telefone na forma
+// interna normalizada — a tradução pro endereço whatsapp:+E.164 vive aqui.
+let client: ReturnType<typeof twilio> | null = null;
+function twilioClient(): ReturnType<typeof twilio> {
+  // Lazy: importar este módulo (em testes, no boot) não exige credenciais válidas.
+  if (!client) client = twilio(env.twilioAccountSid, env.twilioAuthToken);
+  return client;
+}
 
 // O PIX copia-e-cola (BR Code) embute a chave PIX + dados do recebedor — nunca
 // vai pro log. Mensagens normais logam um preview curto pra debug.
@@ -19,25 +22,14 @@ function logPreview(text: string): string {
 export async function sendText(to: string, text: string): Promise<void> {
   console.log('[whatsapp] sendText →', { to, preview: logPreview(text) });
   try {
-    const res = await client.post(`/message/sendText/${env.evolutionInstance}`, { number: to, text });
-    console.log('[whatsapp] sendText ok', { id: res.data?.key?.id });
-  } catch (err) {
-    const detail = axios.isAxiosError(err) ? (err.response?.data ?? err.message) : err;
-    console.error('[whatsapp] sendText failed', detail);
-    throw err;
-  }
-}
-
-export async function sendImage(to: string, base64: string, caption?: string): Promise<void> {
-  console.log('[whatsapp] sendImage →', { to, caption: caption?.slice(0, 80) ?? '(no caption)' });
-  try {
-    const res = await client.post(`/message/sendMedia/${env.evolutionInstance}`, {
-      number: to, mediatype: 'image', mimetype: 'image/png', media: base64, fileName: 'pix.png', caption,
+    const message = await twilioClient().messages.create({
+      from: env.twilioWhatsAppFrom,
+      to: toBrazilWhatsAppAddress(to),
+      body: text,
     });
-    console.log('[whatsapp] sendImage ok', { id: res.data?.key?.id });
+    console.log('[whatsapp] sendText ok', { sid: message.sid });
   } catch (err) {
-    const detail = axios.isAxiosError(err) ? (err.response?.data ?? err.message) : err;
-    console.error('[whatsapp] sendImage failed', detail);
+    console.error('[whatsapp] sendText failed', err);
     throw err;
   }
 }

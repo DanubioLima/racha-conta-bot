@@ -16,6 +16,7 @@
     "seed:danubio": "tsx src/bin/seed-danubio-user.ts"
   },
   "dependencies": {
+    "@fastify/formbody": "^8.0.2",
     "@google/genai": "^2.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.16.0",
@@ -25,6 +26,7 @@
     "open": "^11.0.0",
     "qrcode-pix": "^5.0.0",
     "tsx": "^4.22.0",
+    "twilio": "^6.0.2",
     "ulid": "^3.0.0"
   },
   "devDependencies": {
