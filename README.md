@@ -1,171 +1,124 @@
-# Racha-Conta WhatsApp Bot (MVP)
+# Slice — WhatsApp Bot pra dividir conta
 
-Bot single-user de WhatsApp que recebe uma mensagem em texto livre,
-divide a conta e gera PIX Copia-e-Cola por participante. As entradas de
-pagamento ficam mockadas em um JSON local nessa fase do MVP.
+(repo ainda chamado `racha-conta-bot`; rebrand pro Slice em andamento.)
 
-Design completo: `docs/superpowers/specs/2026-05-16-racha-conta-whatsapp-bot-design.md`.
-Plano de implementação: `docs/superpowers/plans/2026-05-16-racha-conta-whatsapp-bot.md`.
+Bot de WhatsApp que recebe uma frase em português — "Paguei 60 na pizzaria,
+divide com João e Maria, 20 cada" — extrai os dados via Gemini, gera um **PIX
+Copia-e-Cola por participante** e responde no chat. Multi-user lite: quem manda
+mensagem se auto-registra (nome + chave PIX) e o PIX sai no nome do dono da conta.
+A reconciliação é **manual** — o dono marca a conta como paga (`mark_paid`).
 
----
-
-## TL;DR — subir tudo localmente
-
-```bash
-# 1. Subir Evolution API + Postgres + Redis
-docker compose up -d
-
-# 2. Instalar deps do bot e configurar .env
-npm install
-cp .env.example .env   # já vem apontando para o Evolution local
-# preencha USER_WHATSAPP_NUMBER, GEMINI_API_KEY, PIX_KEY, PIX_MERCHANT_NAME, PIX_MERCHANT_CITY
-
-# 3. Criar e parear a instância do Evolution (passo único)
-#    Veja a seção "Parear o WhatsApp" abaixo.
-
-# 4. Rodar o bot
-npm run dev
-```
+WhatsApp via **Twilio** (API oficial). O setup do número fica no runbook
+`docs/superpowers/runbooks/2026-05-31-twilio-setup.md`.
 
 ---
 
-## Componentes do stack local
+## Como funciona
 
-`docker compose up -d` sobe três containers:
+```
+WhatsApp do usuário
+   │  (mensagem de texto)
+   ▼
+Twilio  ──webhook POST (urlencoded + X-Twilio-Signature)──▶  /webhooks/whatsapp
+                                                                   │
+                                          valida assinatura, parseia From/Body
+                                                                   ▼
+                                          dispatchIncomingMessage(phone, text)
+                                                                   │
+                              extractIntent (Gemini 3.1-flash-lite + histórico)
+                                                                   ▼
+        create_bill · register_account · mark_paid · list_bills · close_bill · unknown
+                                                                   │
+                                        ação determinística (SQLite) + resposta
+                                                                   ▼
+                                        sendText → Twilio → WhatsApp do usuário
+```
 
-| Serviço | Porta no host | O que é |
-|---------|---------------|---------|
-| `evolution_api` | `8080` | API do Evolution (recebe webhooks, envia mensagens) |
-| `evolution_postgres` | `5432` | Banco interno do Evolution |
-| `evolution_redis` | `6379` | Cache do Evolution |
-
-**Credenciais de dev (apenas para a stack local):**
-- `AUTHENTICATION_API_KEY` da Evolution = `change-me-local-dev` — já está no `docker-compose.yml` e no `.env.example`. **Troque antes de expor a stack pra fora do localhost.**
-- Postgres: `evolution` / `evolution`.
-
-> O container oficial `evoapicloud/evolution-manager` (UI web) está com o
-> nginx quebrado nas tags atuais e foi removido do compose. Use o fluxo via
-> curl abaixo, ou — se quiser uma UI — aponte o manager hospedado em
-> https://manager.evoapicloud.com para `http://localhost:8080` com a key
-> `change-me-local-dev`.
+- **Caminho do dinheiro é determinístico** — o Gemini só classifica/extrai; quem cria
+  conta, gera PIX e marca pago é o código.
+- **Histórico de conversa** (tabela `conversation_turns`) alimenta o Gemini pra
+  follow-ups com contexto e slot-filling. Ações continuam stateless.
 
 ---
 
-## Parear o WhatsApp (uma vez)
+## Stack
 
-Você precisa criar uma "instância" no Evolution e parear ela com o seu número
-de WhatsApp escaneando um QR Code.
-
-```bash
-# 1. Criar a instância (o nome precisa bater com EVOLUTION_INSTANCE do .env)
-curl -s -X POST http://localhost:8080/instance/create \
-  -H "apikey: change-me-local-dev" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "instanceName": "racha-conta",
-    "qrcode": true,
-    "integration": "WHATSAPP-BAILEYS"
-  }' | jq
-```
-
-A resposta inclui um campo `qrcode.base64` no formato `data:image/png;base64,...`.
-Cole esse data URL na barra de endereço do Chrome (ou em qualquer visualizador
-de PNG base64), abra o WhatsApp do celular em
-**Configurações → Aparelhos conectados → Conectar um aparelho** e escaneie.
-
-Se o QR expirar antes de você escanear, gere um novo:
-
-```bash
-curl -s http://localhost:8080/instance/connect/racha-conta \
-  -H "apikey: change-me-local-dev" | jq
-```
-
-Para checar o status da instância depois:
-
-```bash
-curl -s http://localhost:8080/instance/connectionState/racha-conta \
-  -H "apikey: change-me-local-dev" | jq
-```
-
-Quando aparecer `state: "open"`, está pareado.
+- **Runtime:** Node 20+, TypeScript, [Fastify](https://fastify.dev).
+- **WhatsApp:** Twilio (SDK oficial `twilio`; webhook `@fastify/formbody`).
+- **LLM:** `@google/genai` → `gemini-3.1-flash-lite` (thinking `MINIMAL`).
+- **Persistência:** SQLite via `better-sqlite3` (`data/slice.db`).
+- **PIX:** `qrcode-pix` (BR Code Copia-e-Cola, só texto).
+- **Testes:** vitest (integração: SQLite efêmero + Gemini/sendText stubados).
 
 ---
 
-## Configurar o webhook (uma vez por instância)
+## Rodar localmente
 
-O Evolution precisa saber pra onde mandar as mensagens recebidas. Aponte ele
-pro bot rodando no host.
-
-```bash
-curl -s -X POST http://localhost:8080/webhook/set/racha-conta \
-  -H "apikey: change-me-local-dev" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "webhook": {
-      "enabled": true,
-      "url": "http://host.docker.internal:3000/webhooks/whatsapp",
-      "byEvents": false,
-      "base64": false,
-      "events": ["MESSAGES_UPSERT"]
-    }
-  }' | jq
-```
-
-`host.docker.internal` resolve para a sua máquina hospedeira a partir de
-dentro do container do Evolution (o `extra_hosts` do compose configura isso
-automaticamente no Linux). Se você preferir não usar Docker DNS, substitua
-por `http://<seu-IP-da-LAN>:3000/webhooks/whatsapp`.
-
----
-
-## Rodar o bot
+O bot não gerencia mais conexão de WhatsApp (a Twilio cuida disso). Pra desenvolver,
+você expõe o webhook local com um túnel e usa o **Sandbox da Twilio**.
 
 ```bash
 npm install
 cp .env.example .env
-# preencha USER_WHATSAPP_NUMBER, GEMINI_API_KEY, PIX_KEY, PIX_MERCHANT_NAME, PIX_MERCHANT_CITY
+# preencha TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM,
+#          USER_WHATSAPP_NUMBER, GEMINI_API_KEY, PIX_KEY, PIX_MERCHANT_NAME, PIX_MERCHANT_CITY
+
+# 1. Suba um túnel pro localhost:3000 (ex.: cloudflared)
+cloudflared tunnel --url http://localhost:3000
+
+# 2. No console Twilio (Messaging → Try it out → Send a WhatsApp message),
+#    aponte "When a message comes in" pra https://<tunel>/webhooks/whatsapp
+#    e entre no Sandbox mandando "join <código>" do seu WhatsApp.
+#    Use TWILIO_WHATSAPP_FROM=whatsapp:+14155238886 (número do Sandbox) no .env.
+
+# 3. Rode o bot
 npm run dev
 ```
 
-Logs esperados:
+Detalhes (Sandbox vs número de produção, migração do chip, gotchas de assinatura):
+`docs/superpowers/runbooks/2026-05-31-twilio-setup.md`.
 
-```
-Server listening at http://0.0.0.0:3000
-[worker] ledger worker starting (interval 30000ms)
-```
-
----
-
-## Smoke test ponta-a-ponta
-
-1. Pelo seu WhatsApp (o mesmo `USER_WHATSAPP_NUMBER` do `.env`), envie pra
-   **o próprio número** que você pareou no Evolution:
-
-   > Paguei 40 reais na pizzaria, dividir entre João e Maria, 20 cada.
-
-2. Em poucos segundos o bot responde no mesmo chat com a confirmação e dois
-   códigos PIX Copia-e-Cola — um pro João, um pra Maria.
-
-3. O arquivo `src/mock/incoming-transactions.json` já vem com dois pagamentos
-   simulados (João e Maria, R$ 20 cada). Dentro do intervalo
-   `WORKER_INTERVAL_MS` (default 30 s) o worker reconcilia ambos e fecha a
-   conta — você recebe uma notificação a cada pagamento e a mensagem final
-   de fechamento.
-
-4. Pra testar outros cenários, edite `src/mock/incoming-transactions.json`
-   (adicione entradas com `consumed: false`). O worker re-lê o arquivo a cada
-   tick.
+> O `docker-compose.yml` ainda traz Evolution/Postgres/Redis — é o **provider
+> antigo (Baileys)**, mantido como fallback durante a transição pro Twilio. Não é
+> mais necessário pro fluxo de WhatsApp.
 
 ---
 
-## Resetar estado
+## Variáveis de ambiente
+
+| Var | O que é |
+|-----|---------|
+| `TWILIO_ACCOUNT_SID` | Account SID (Console → Account Info) |
+| `TWILIO_AUTH_TOKEN` | Auth Token — **segredo**; usado também pra validar a assinatura do webhook |
+| `TWILIO_WHATSAPP_FROM` | número do bot em `whatsapp:+E.164` (Sandbox ou produção) |
+| `USER_WHATSAPP_NUMBER` | número do operador (Danubio), E.164 sem `+` |
+| `GEMINI_API_KEY` | https://aistudio.google.com/app/apikey |
+| `PIX_KEY`, `PIX_MERCHANT_NAME`, `PIX_MERCHANT_CITY` | dados do PIX estático |
+| `PORT`, `PUBLIC_BASE_URL` | porta e URL pública do bot |
+| `LEDGER_SOURCE` | `cumbuca` \| `mock` — legado dormente (ver nota no fim) |
+| `SLICE_DB_PATH` | caminho do SQLite; os testes usam `:memory:` |
+
+---
+
+## Testes
 
 ```bash
-rm -f data/db.json                              # apaga as bills criadas
-git checkout src/mock/incoming-transactions.json  # reseta o mock seedado
-docker compose down -v                          # apaga TAMBÉM Postgres/Redis e
-                                                #   a sessão WhatsApp pareada
+npm test         # vitest run
+npm run typecheck # tsc --noEmit
 ```
+
+Testes de integração rodam contra um SQLite efêmero, com o Gemini (`extractIntent`)
+e o `sendText` stubados — asserta as mensagens enviadas **e** o estado do banco. A
+acurácia de classificação do LLM e o feel conversacional ficam pro smoke ao vivo
+(o CI stuba o modelo).
+
+---
+
+## Deploy
+
+Hetzner + Dokploy. `git push` na `main` → Dokploy auto-deploya via webhook do
+GitHub (bot + landing). Em produção o webhook da Twilio aponta pra
+`https://bot.appslice.com.br/webhooks/whatsapp`.
 
 ---
 
@@ -173,18 +126,38 @@ docker compose down -v                          # apaga TAMBÉM Postgres/Redis e
 
 ```
 src/
-  server.ts                       Fastify bootstrap + worker boot
-  config/env.ts                   loads + validates env
-  routes/whatsapp.webhook.ts      POST /webhooks/whatsapp
+  server.ts                         Fastify bootstrap (formbody) + scanner boot
+  config/env.ts                     carrega + valida env
+  lib/phone.ts                      normalização BR (nono dígito) + endereço whatsapp:+E.164
+  routes/whatsapp.webhook.ts        POST /webhooks/whatsapp (parse Twilio + valida assinatura)
   services/
-    llm/gemini.ts                 extractBillFromText
-    pix/pix.ts                    buildPixPayload
-    whatsapp/whatsapp.ts          sendText, notifyUser, wasSentByBot
+    dispatch/dispatch-message.ts    dispatchIncomingMessage: roteia intent → ação
+    llm/
+      gemini.ts                     extractIntent(text, ctx, history)
+      prompt.ts                     prompt + few-shots
     bills/
-      bill.types.ts               Bill, Participant, enums
-      bill.service.ts             createBill, tryReconcile, notifyUnknown
-  repositories/bill.repository.ts read/write data/db.json (mutex)
-  workers/ledger.worker.ts        roda a cada WORKER_INTERVAL_MS
-  mock/incoming-transactions.json pagamentos fake pra reconciliação
-docker-compose.yml                stack local do Evolution (api, manager, pg, redis)
+      bill.types.ts                 Bill, Participant, ExtractionResult, enums
+      bill.service.ts               createBillFromExtraction, markPaid, listOpenBills, closeBills
+    users/user.service.ts           handleRegistration
+    pix/pix.ts                      BR Code Copia-e-Cola
+    messaging/voice.ts              fonte única das mensagens do bot
+    whatsapp/whatsapp.ts            sendText via SDK Twilio
+  repositories/                     SQLite (db, user, bill, conversation, unknown-intents)
+  workers/payment-scanner.worker.ts reconciliação (dormente — ver Cumbuca)
+docker-compose.yml                  stack do provider antigo (Evolution) — fallback
 ```
+
+---
+
+## Docs
+
+- Specs e planos: `docs/superpowers/specs/` e `docs/superpowers/plans/`.
+- Runbooks (Twilio, VPS): `docs/superpowers/runbooks/`.
+
+## Nota: Cumbuca (legado dormente)
+
+O código em `src/services/cumbuca/`, `src/services/ledger/`,
+`workers/payment-scanner.worker.ts` e `routes/cumbuca.oauth.ts` é de uma fase
+anterior (reconciliação automática via Open Finance). **Cumbuca saiu do escopo** em
+2026-05-26; o código continua no repo mas está dormente e será removido. A
+reconciliação hoje é manual (`mark_paid`).
