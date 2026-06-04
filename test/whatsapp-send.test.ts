@@ -20,7 +20,7 @@ describe('sendText (Twilio)', () => {
   it('chama messages.create com from configurado, to em E.164 e body', async () => {
     await sendText('558899990000', 'oi');
     expect(createMock).toHaveBeenCalledWith({
-      from: 'whatsapp:+5588994963067',
+      from: 'whatsapp:+558894963067', // canal Twilio = wa_id, SEM o nono dígito (63007 com ele)
       to: 'whatsapp:+558899990000', // wa_id BR sem o nono dígito
       body: 'oi',
     });

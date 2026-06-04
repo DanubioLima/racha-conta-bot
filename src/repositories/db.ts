@@ -51,6 +51,16 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_participants_bill ON participants(bill_id);
 
+  CREATE TABLE IF NOT EXISTS expenses (
+    id          TEXT PRIMARY KEY,
+    owner_phone TEXT NOT NULL REFERENCES users(phone),
+    amount      REAL NOT NULL,
+    description TEXT NOT NULL,
+    category    TEXT NOT NULL,
+    spent_at    TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_expenses_owner_date ON expenses(owner_phone, spent_at);
+
   CREATE TABLE IF NOT EXISTS unknown_intents (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     at         TEXT NOT NULL,

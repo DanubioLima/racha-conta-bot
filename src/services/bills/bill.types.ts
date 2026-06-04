@@ -1,3 +1,5 @@
+import type { ExtractedExpense, ExpenseQueryInput } from '../expenses/expense.types.js';
+
 export type BillStatus = 'OPEN' | 'CLOSED' | 'EXPIRED';
 export type ParticipantStatus = 'PENDING' | 'PAID';
 
@@ -56,4 +58,6 @@ export type ExtractionResult =
   | { intent: 'mark_paid'; payment: MarkPaidInput }
   | { intent: 'list_bills' }
   | { intent: 'close_bill'; close: CloseInput }
+  | { intent: 'log_expense'; expense: ExtractedExpense; profile?: RegisterProfile }
+  | { intent: 'query_expenses'; query: ExpenseQueryInput }
   | { intent: 'unknown'; reply?: string };

@@ -3,11 +3,11 @@ import { userRepository } from '../src/repositories/user.repository.js';
 import { billRepository } from '../src/repositories/bill.repository.js';
 import type { Bill } from '../src/services/bills/bill.types.js';
 
-// Ordem respeita FK: participants → bills → users.
+// Ordem respeita FK: participants → bills → expenses → users.
 export function resetDb(): void {
   db.exec(
-    'DELETE FROM participants; DELETE FROM bills; DELETE FROM users; ' +
-      'DELETE FROM unknown_intents; DELETE FROM conversation_turns;',
+    'DELETE FROM participants; DELETE FROM bills; DELETE FROM expenses; ' +
+      'DELETE FROM users; DELETE FROM unknown_intents; DELETE FROM conversation_turns;',
   );
 }
 

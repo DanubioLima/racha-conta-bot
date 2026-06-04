@@ -2,10 +2,11 @@
 
 (repo ainda chamado `racha-conta-bot`; rebrand pro Slice em andamento.)
 
-Bot de WhatsApp que recebe uma frase em português — "Paguei 60 na pizzaria,
-divide com João e Maria, 20 cada" — extrai os dados via Gemini, gera um **PIX
-Copia-e-Cola por participante** e responde no chat. Multi-user lite: quem manda
-mensagem se auto-registra (nome + chave PIX) e o PIX sai no nome do dono da conta.
+Assistente de dinheiro no WhatsApp. **Anota gastos** do dia a dia ("gastei 25
+no mercado" — categoria automática via Gemini, consulta por hoje/semana/mês) e
+**divide contas** ("Paguei 60 na pizzaria, divide com João e Maria") gerando um
+**PIX Copia-e-Cola por participante**. Multi-user lite: quem manda mensagem se
+auto-registra (nome + chave PIX; pra só anotar gastos, o nome basta).
 A reconciliação é **manual** — o dono marca a conta como paga (`mark_paid`).
 
 WhatsApp via **Twilio** (API oficial). O setup do número fica no runbook
@@ -27,7 +28,7 @@ Twilio  ──webhook POST (urlencoded + X-Twilio-Signature)──▶  /webhooks
                                                                    │
                               extractIntent (Gemini 3.1-flash-lite + histórico)
                                                                    ▼
-        create_bill · register_account · mark_paid · list_bills · close_bill · unknown
+ create_bill · log_expense · query_expenses · register_account · mark_paid · list_bills · close_bill · unknown
                                                                    │
                                         ação determinística (SQLite) + resposta
                                                                    ▼
@@ -133,11 +134,14 @@ src/
     bills/
       bill.types.ts                 Bill, Participant, ExtractionResult, enums
       bill.service.ts               createBillFromExtraction, markPaid, listOpenBills, closeBills
+    expenses/
+      expense.types.ts              Expense, categorias (enum inglês), períodos
+      expense.service.ts            logExpense, queryExpenses (fronteiras em BRT)
     users/user.service.ts           handleRegistration
     pix/pix.ts                      BR Code Copia-e-Cola
     messaging/voice.ts              fonte única das mensagens do bot
     whatsapp/whatsapp.ts            sendText via SDK Twilio
-  repositories/                     SQLite (db, user, bill, conversation, unknown-intents)
+  repositories/                     SQLite (db, user, bill, expense, conversation, unknown-intents)
 docker-compose.yml                  serviço do bot em produção (Dokploy)
 ```
 

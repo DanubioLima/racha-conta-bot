@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { env } from "../../config/env.js";
 import { SYSTEM_INSTRUCTION } from "./prompt.js";
+import { EXPENSE_CATEGORIES } from "../expenses/expense.types.js";
 
 import type { ExtractionResult } from "../bills/bill.types.js";
 import type { HistoryTurn } from "../../repositories/conversation.repository.js";
@@ -10,7 +11,7 @@ const ai = new GoogleGenAI({ apiKey: env.geminiApiKey });
 export const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    intent: { type: Type.STRING, enum: ["create_bill", "register_account", "mark_paid", "list_bills", "close_bill", "unknown"] },
+    intent: { type: Type.STRING, enum: ["create_bill", "register_account", "mark_paid", "list_bills", "close_bill", "log_expense", "query_expenses", "unknown"] },
     bill: {
       type: Type.OBJECT,
       properties: {
@@ -53,6 +54,22 @@ export const RESPONSE_SCHEMA = {
         reference: { type: Type.STRING },
         confirmed: { type: Type.BOOLEAN },
       },
+    },
+    expense: {
+      type: Type.OBJECT,
+      properties: {
+        amount: { type: Type.NUMBER },
+        description: { type: Type.STRING },
+        category: { type: Type.STRING, enum: [...EXPENSE_CATEGORIES] },
+      },
+      required: ["amount", "description", "category"],
+    },
+    query: {
+      type: Type.OBJECT,
+      properties: {
+        period: { type: Type.STRING, enum: ["today", "week", "month"] },
+      },
+      required: ["period"],
     },
     reply: { type: Type.STRING },
   },
