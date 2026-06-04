@@ -1,9 +1,0 @@
-# Dev local: re-expõe a porta 8080 do Evolution no host pra você curl-ar.
-# Em produção (Dokploy) esse arquivo não é usado — só `docker-compose.yml`.
-#
-# Compose auto-mescla este arquivo quando presente em `docker compose up`.
-
-services:
-  evolution-api:
-    ports:
-      - "8080:8080"

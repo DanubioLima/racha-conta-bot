@@ -5,7 +5,6 @@ const { sentMessages } = vi.hoisted(() => ({ sentMessages: [] as { to: string; t
 vi.mock('../src/services/whatsapp/whatsapp.js', () => ({
   sendText: vi.fn(async (to: string, text: string) => { sentMessages.push({ to, text }); }),
 }));
-vi.mock('../src/workers/payment-scanner.worker.js', () => ({ notifyNewBillCreated: vi.fn() }));
 vi.mock('../src/services/llm/gemini.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/llm/gemini.js')>();
   return { ...actual, extractIntent: vi.fn() };

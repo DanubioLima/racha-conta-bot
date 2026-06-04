@@ -2,7 +2,6 @@ import { ulid } from "ulid";
 import { billRepository } from "../../repositories/bill.repository.js";
 import { buildPixPayload } from "../pix/pix.js";
 import { sendText } from "../whatsapp/whatsapp.js";
-import { notifyNewBillCreated } from "../../workers/payment-scanner.worker.js";
 import {
   formatBRL,
   billCreatedHeadline,
@@ -23,7 +22,6 @@ import type {
   Bill,
   CloseInput,
   ExtractedBill,
-  IncomingTransaction,
   MarkPaidInput,
   Participant,
 } from "./bill.types.js";
@@ -115,7 +113,6 @@ export async function createBillFromExtraction(extracted: ExtractedBill, owner: 
   } catch (sendError) {
     console.error("[bill] sendBillCreatedMessages failed", sendError);
   }
-  notifyNewBillCreated();
   return bill;
 }
 
@@ -267,58 +264,4 @@ export async function markPaid(ownerPhone: string, input: MarkPaidInput): Promis
     }
   }
   return "";
-}
-
-// ---- reconcile (Cumbuca, owner-scoped) ----
-
-interface MatchResult {
-  billId: string;
-  participantName: string;
-}
-
-async function findMatch(tx: IncomingTransaction, ownerPhone: string): Promise<MatchResult | null> {
-  const openBills = await billRepository.findOpenForOwner(ownerPhone);
-  for (const bill of openBills) {
-    const candidates = bill.participants.filter(
-      (p) => p.status === "PENDING" && Math.abs(p.amount_due - tx.amount) < 0.005,
-    );
-    if (candidates.length === 0) continue;
-    const byName = candidates.find((p) => {
-      const a = p.name.toLowerCase();
-      const b = tx.payer_name.toLowerCase();
-      return a.includes(b) || b.includes(a);
-    });
-    const winner = byName ?? candidates[0]!;
-    return { billId: bill.id, participantName: winner.name };
-  }
-  return null;
-}
-
-export async function tryReconcile(tx: IncomingTransaction, ownerPhone: string): Promise<boolean> {
-  const match = await findMatch(tx, ownerPhone);
-  if (!match) {
-    console.log("[bill] tryReconcile no match", { txId: tx.id, amount: tx.amount, payer: tx.payer_name });
-    return false;
-  }
-  console.log("[bill] tryReconcile matched", { txId: tx.id, ...match });
-
-  const updated = await billRepository.update(match.billId, (b) => {
-    const p = b.participants.find((x) => x.name === match.participantName);
-    if (!p || p.status === "PAID") return;
-    p.status = "PAID";
-    p.paid_at = new Date().toISOString();
-    if (b.participants.every((x) => x.status === "PAID")) b.status = "CLOSED";
-  });
-  if (!updated) return false;
-
-  const paid = updated.participants.find((x) => x.name === match.participantName);
-  if (paid) {
-    const msg = renderPaidMessage(updated, paid);
-    if (msg) await sendText(updated.owner_phone, msg);
-  }
-  if (updated.status === "CLOSED") {
-    console.log("[bill] bill closed", { id: updated.id });
-    await sendText(updated.owner_phone, renderClosedMessage(updated));
-  }
-  return true;
 }

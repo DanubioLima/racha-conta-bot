@@ -17,15 +17,8 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-const ledgerSourceRaw = (process.env.LEDGER_SOURCE ?? 'cumbuca').toLowerCase();
-if (ledgerSourceRaw !== 'cumbuca' && ledgerSourceRaw !== 'mock') {
-  console.error(`Invalid LEDGER_SOURCE "${ledgerSourceRaw}". Expected "cumbuca" or "mock".`);
-  process.exit(1);
-}
-
 export const env = {
   port: Number(process.env.PORT ?? 3000),
-  publicBaseUrl: process.env.PUBLIC_BASE_URL ?? `http://localhost:${Number(process.env.PORT ?? 3000)}`,
   twilioAccountSid: process.env.TWILIO_ACCOUNT_SID!,
   twilioAuthToken: process.env.TWILIO_AUTH_TOKEN!,
   twilioWhatsAppFrom: process.env.TWILIO_WHATSAPP_FROM!,
@@ -34,5 +27,4 @@ export const env = {
   pixKey: process.env.PIX_KEY!,
   pixMerchantName: process.env.PIX_MERCHANT_NAME!,
   pixMerchantCity: process.env.PIX_MERCHANT_CITY!,
-  ledgerSource: ledgerSourceRaw as 'cumbuca' | 'mock',
 };

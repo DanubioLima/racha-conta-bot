@@ -12,9 +12,9 @@ if (DB_PATH !== ':memory:') {
 
 export const db = new Database(DB_PATH);
 
-// WAL deixa leitura e escrita concorrerem sem travar uma à outra (o worker de
-// reconciliação lê enquanto o webhook escreve). foreign_keys precisa ser ligado
-// por conexão — não é default no SQLite — pra o ON DELETE CASCADE valer.
+// WAL deixa leitura e escrita concorrerem sem travar uma à outra. foreign_keys
+// precisa ser ligado por conexão — não é default no SQLite — pra o ON DELETE
+// CASCADE valer.
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -50,11 +50,6 @@ db.exec(`
     paid_at     TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_participants_bill ON participants(bill_id);
-
-  CREATE TABLE IF NOT EXISTS processed_transactions (
-    transaction_id TEXT PRIMARY KEY,
-    processed_at   TEXT NOT NULL
-  );
 
   CREATE TABLE IF NOT EXISTS unknown_intents (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

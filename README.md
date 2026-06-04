@@ -78,10 +78,6 @@ npm run dev
 Detalhes (Sandbox vs número de produção, migração do chip, gotchas de assinatura):
 `docs/superpowers/runbooks/2026-05-31-twilio-setup.md`.
 
-> O `docker-compose.yml` ainda traz Evolution/Postgres/Redis — é o **provider
-> antigo (Baileys)**, mantido como fallback durante a transição pro Twilio. Não é
-> mais necessário pro fluxo de WhatsApp.
-
 ---
 
 ## Variáveis de ambiente
@@ -94,8 +90,7 @@ Detalhes (Sandbox vs número de produção, migração do chip, gotchas de assin
 | `USER_WHATSAPP_NUMBER` | número do operador (Danubio), E.164 sem `+` |
 | `GEMINI_API_KEY` | https://aistudio.google.com/app/apikey |
 | `PIX_KEY`, `PIX_MERCHANT_NAME`, `PIX_MERCHANT_CITY` | dados do PIX estático |
-| `PORT`, `PUBLIC_BASE_URL` | porta e URL pública do bot |
-| `LEDGER_SOURCE` | `cumbuca` \| `mock` — legado dormente (ver nota no fim) |
+| `PORT` | porta do bot (default 3000) |
 | `SLICE_DB_PATH` | caminho do SQLite; os testes usam `:memory:` |
 
 ---
@@ -126,7 +121,7 @@ GitHub (bot + landing). Em produção o webhook da Twilio aponta pra
 
 ```
 src/
-  server.ts                         Fastify bootstrap (formbody) + scanner boot
+  server.ts                         Fastify bootstrap (formbody + webhook)
   config/env.ts                     carrega + valida env
   lib/phone.ts                      normalização BR (nono dígito) + endereço whatsapp:+E.164
   routes/whatsapp.webhook.ts        POST /webhooks/whatsapp (parse Twilio + valida assinatura)
@@ -143,8 +138,7 @@ src/
     messaging/voice.ts              fonte única das mensagens do bot
     whatsapp/whatsapp.ts            sendText via SDK Twilio
   repositories/                     SQLite (db, user, bill, conversation, unknown-intents)
-  workers/payment-scanner.worker.ts reconciliação (dormente — ver Cumbuca)
-docker-compose.yml                  stack do provider antigo (Evolution) — fallback
+docker-compose.yml                  serviço do bot em produção (Dokploy)
 ```
 
 ---
@@ -153,11 +147,3 @@ docker-compose.yml                  stack do provider antigo (Evolution) — fal
 
 - Specs e planos: `docs/superpowers/specs/` e `docs/superpowers/plans/`.
 - Runbooks (Twilio, VPS): `docs/superpowers/runbooks/`.
-
-## Nota: Cumbuca (legado dormente)
-
-O código em `src/services/cumbuca/`, `src/services/ledger/`,
-`workers/payment-scanner.worker.ts` e `routes/cumbuca.oauth.ts` é de uma fase
-anterior (reconciliação automática via Open Finance). **Cumbuca saiu do escopo** em
-2026-05-26; o código continua no repo mas está dormente e será removido. A
-reconciliação hoje é manual (`mark_paid`).
