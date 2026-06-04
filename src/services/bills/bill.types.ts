@@ -1,6 +1,9 @@
 import type { ExtractedExpense, ExpenseQueryInput } from '../expenses/expense.types.js';
 
 export type BillStatus = 'OPEN' | 'CLOSED' | 'EXPIRED';
+// 'split' = conta rachada entre pessoas; 'debt' = fiado (alguém deve ao dono,
+// sem evento de divisão). Dívida reusa o modelo de bill com 1 participante.
+export type BillKind = 'split' | 'debt';
 export type ParticipantStatus = 'PENDING' | 'PAID';
 
 export interface Participant {
@@ -14,6 +17,7 @@ export interface Participant {
 export interface Bill {
   id: string;
   owner_phone: string;
+  kind: BillKind;
   description: string;
   total_amount: number;
   amount_per_person: number;
@@ -30,6 +34,12 @@ export interface ExtractedBill {
   headcount: number;
   // Only the OTHER people who need to send PIX. Never includes the user.
   participants: { name: string; amount_due: number }[];
+}
+
+export interface ExtractedDebt {
+  debtor_name: string;
+  amount: number;
+  description?: string; // motivo/contexto ("jantar"); ausente quando não dito
 }
 
 export interface RegisterProfile {
@@ -58,6 +68,7 @@ export type ExtractionResult =
   | { intent: 'mark_paid'; payment: MarkPaidInput }
   | { intent: 'list_bills' }
   | { intent: 'close_bill'; close: CloseInput }
+  | { intent: 'register_debt'; debt: ExtractedDebt; profile?: RegisterProfile }
   | { intent: 'log_expense'; expense: ExtractedExpense; profile?: RegisterProfile }
   | { intent: 'query_expenses'; query: ExpenseQueryInput }
   | { intent: 'unknown'; reply?: string };

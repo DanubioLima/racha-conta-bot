@@ -34,12 +34,14 @@ export async function insertOpenBill(
     id: string;
     description: string;
     total: number;
+    kind?: 'split' | 'debt';
     participants: { name: string; amount_due: number; status?: 'PENDING' | 'PAID' }[];
   },
 ): Promise<void> {
   const bill: Bill = {
     id: opts.id,
     owner_phone: ownerPhone,
+    kind: opts.kind ?? 'split',
     description: opts.description,
     total_amount: opts.total,
     amount_per_person: opts.participants[0]?.amount_due ?? 0,

@@ -11,7 +11,7 @@ const ai = new GoogleGenAI({ apiKey: env.geminiApiKey });
 export const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    intent: { type: Type.STRING, enum: ["create_bill", "register_account", "mark_paid", "list_bills", "close_bill", "log_expense", "query_expenses", "unknown"] },
+    intent: { type: Type.STRING, enum: ["create_bill", "register_account", "mark_paid", "list_bills", "close_bill", "register_debt", "log_expense", "query_expenses", "unknown"] },
     bill: {
       type: Type.OBJECT,
       properties: {
@@ -54,6 +54,15 @@ export const RESPONSE_SCHEMA = {
         reference: { type: Type.STRING },
         confirmed: { type: Type.BOOLEAN },
       },
+    },
+    debt: {
+      type: Type.OBJECT,
+      properties: {
+        debtor_name: { type: Type.STRING },
+        amount: { type: Type.NUMBER },
+        description: { type: Type.STRING },
+      },
+      required: ["debtor_name", "amount"],
     },
     expense: {
       type: Type.OBJECT,

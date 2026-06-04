@@ -1,5 +1,5 @@
 import { extractIntent, GeminiUnavailableError } from "../llm/gemini.js";
-import { createBillFromExtraction, markPaid, listOpenBills, closeBills } from "../bills/bill.service.js";
+import { createBillFromExtraction, createDebtFromExtraction, markPaid, listOpenBills, closeBills } from "../bills/bill.service.js";
 import { logExpense, queryExpenses } from "../expenses/expense.service.js";
 import { handleRegistration } from "../users/user.service.js";
 import { userRepository, type User } from "../../repositories/user.repository.js";
@@ -85,6 +85,21 @@ export async function dispatchIncomingMessage(senderPhone: string, text: string)
         if (!owner.pix_key) { await say(askForPix(owner.name)); break; }
         await createBillFromExtraction(result.bill, owner);
         botTurn = "[criei a conta]";
+        break;
+      }
+
+      case "register_debt": {
+        if (!result.debt) { await say(fallbackReply({ registered: !!user })); break; }
+        // Mesmos gates do create_bill: a cobrança PIX sai no nome do dono.
+        let owner = user;
+        if (result.profile && (!owner || !owner.pix_key)) {
+          await handleRegistration(senderPhone, result.profile, { continueToBill: true });
+          owner = await userRepository.findByPhone(senderPhone);
+        }
+        if (!owner) { await say(askToRegister()); break; }
+        if (!owner.pix_key) { await say(askForPix(owner.name)); break; }
+        await createDebtFromExtraction(result.debt, owner);
+        botTurn = "[anotei a dívida]";
         break;
       }
 

@@ -3,8 +3,9 @@
 (repo ainda chamado `racha-conta-bot`; rebrand pro Slice em andamento.)
 
 Assistente de dinheiro no WhatsApp. **Anota gastos** do dia a dia ("gastei 25
-no mercado" — categoria automática via Gemini, consulta por hoje/semana/mês) e
-**divide contas** ("Paguei 60 na pizzaria, divide com João e Maria") gerando um
+no mercado" — categoria automática via Gemini, consulta por hoje/semana/mês),
+**controla quem te deve** ("o Roberto me deve 100" → fiado com PIX da cobrança)
+e **divide contas** ("Paguei 60 na pizzaria, divide com João e Maria") gerando um
 **PIX Copia-e-Cola por participante**. Multi-user lite: quem manda mensagem se
 auto-registra (nome + chave PIX; pra só anotar gastos, o nome basta).
 A reconciliação é **manual** — o dono marca a conta como paga (`mark_paid`).
@@ -28,7 +29,7 @@ Twilio  ──webhook POST (urlencoded + X-Twilio-Signature)──▶  /webhooks
                                                                    │
                               extractIntent (Gemini 3.1-flash-lite + histórico)
                                                                    ▼
- create_bill · log_expense · query_expenses · register_account · mark_paid · list_bills · close_bill · unknown
+ create_bill · register_debt · log_expense · query_expenses · register_account · mark_paid · list_bills · close_bill · unknown
                                                                    │
                                         ação determinística (SQLite) + resposta
                                                                    ▼
@@ -108,6 +109,17 @@ e o `sendText` stubados — asserta as mensagens enviadas **e** o estado do banc
 acurácia de classificação do LLM e o feel conversacional ficam pro smoke ao vivo
 (o CI stuba o modelo).
 
+## Métricas da validação
+
+```bash
+npm run metrics                 # data/slice.db local
+npm run metrics -- caminho.db   # cópia baixada de prod (docker cp + -wal/-shm)
+```
+
+Read-only: usuários novos, **% com 2º dia de atividade em ≤14 dias**
+(métrica-mãe), uso por feature (rachas/dívidas/gastos por categoria) e volume
+de `unknown_intents` (radar de classificação).
+
 ---
 
 ## Deploy
@@ -133,7 +145,7 @@ src/
       prompt.ts                     prompt + few-shots
     bills/
       bill.types.ts                 Bill, Participant, ExtractionResult, enums
-      bill.service.ts               createBillFromExtraction, markPaid, listOpenBills, closeBills
+      bill.service.ts               createBillFromExtraction, createDebtFromExtraction, markPaid, listOpenBills, closeBills
     expenses/
       expense.types.ts              Expense, categorias (enum inglês), períodos
       expense.service.ts            logExpense, queryExpenses (fronteiras em BRT)

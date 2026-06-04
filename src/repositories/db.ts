@@ -31,6 +31,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS bills (
     id               TEXT PRIMARY KEY,
     owner_phone      TEXT NOT NULL REFERENCES users(phone),
+    kind             TEXT NOT NULL DEFAULT 'split',
     description      TEXT NOT NULL,
     total_amount     REAL NOT NULL,
     amount_per_person REAL NOT NULL,
@@ -81,3 +82,11 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_conversation_phone ON conversation_turns(phone, id);
 `);
+
+// Migração: bancos criados antes do reposicionamento (assistente de dinheiro)
+// não têm a coluna kind ('split' | 'debt') — o CREATE IF NOT EXISTS acima não
+// altera tabela existente. Guarda de pragma deixa o ALTER idempotente.
+const billsColumns = db.pragma('table_info(bills)') as { name: string }[];
+if (!billsColumns.some((column) => column.name === 'kind')) {
+  db.exec("ALTER TABLE bills ADD COLUMN kind TEXT NOT NULL DEFAULT 'split'");
+}

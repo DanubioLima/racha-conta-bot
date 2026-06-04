@@ -4,6 +4,7 @@ import type { Bill, Participant } from '../services/bills/bill.types.js';
 interface BillRow {
   id: string;
   owner_phone: string;
+  kind: Bill['kind'];
   description: string;
   total_amount: number;
   amount_per_person: number;
@@ -34,11 +35,11 @@ const selectParticipants = db.prepare<[string], ParticipantRow>(
 );
 
 const insertBill = db.prepare(
-  `INSERT INTO bills (id, owner_phone, description, total_amount, amount_per_person, status, created_at)
-   VALUES (@id, @owner_phone, @description, @total_amount, @amount_per_person, @status, @created_at)`,
+  `INSERT INTO bills (id, owner_phone, kind, description, total_amount, amount_per_person, status, created_at)
+   VALUES (@id, @owner_phone, @kind, @description, @total_amount, @amount_per_person, @status, @created_at)`,
 );
 const updateBill = db.prepare(
-  `UPDATE bills SET owner_phone = @owner_phone, description = @description, total_amount = @total_amount,
+  `UPDATE bills SET owner_phone = @owner_phone, kind = @kind, description = @description, total_amount = @total_amount,
    amount_per_person = @amount_per_person, status = @status, created_at = @created_at WHERE id = @id`,
 );
 const deleteParticipants = db.prepare('DELETE FROM participants WHERE bill_id = ?');
@@ -62,6 +63,7 @@ function hydrate(row: BillRow): Bill {
   return {
     id: row.id,
     owner_phone: row.owner_phone,
+    kind: row.kind,
     description: row.description,
     total_amount: row.total_amount,
     amount_per_person: row.amount_per_person,
@@ -92,6 +94,7 @@ const insertTx = db.transaction((bill: Bill) => {
   insertBill.run({
     id: bill.id,
     owner_phone: bill.owner_phone,
+    kind: bill.kind,
     description: bill.description,
     total_amount: bill.total_amount,
     amount_per_person: bill.amount_per_person,
@@ -109,6 +112,7 @@ const updateTx = db.transaction((billId: string, mutator: (b: Bill) => void): Bi
   updateBill.run({
     id: bill.id,
     owner_phone: bill.owner_phone,
+    kind: bill.kind,
     description: bill.description,
     total_amount: bill.total_amount,
     amount_per_person: bill.amount_per_person,
