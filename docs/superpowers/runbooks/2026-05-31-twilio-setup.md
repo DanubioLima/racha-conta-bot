@@ -66,9 +66,13 @@ Só depois que a Fase A funcionar.
    **HTTP POST**.
 7. **Trocar o env pro número real:**
    ```
-   TWILIO_WHATSAPP_FROM=whatsapp:+5588994963067
+   TWILIO_WHATSAPP_FROM=whatsapp:+558894963067
    ```
-   (SID e Auth Token iguais.) Deploy.
+   ⚠️ **SEM o nono dígito** — o canal é endereçado pelo **wa_id** (que no BR roteia sem
+   o 9), não pelo E.164 digitado no registro. Com o 9 o envio falha com **63007**
+   "could not find a Channel with the specified From address". Fonte da verdade pro
+   endereço exato: campo **To** de qualquer mensagem inbound em **Monitor → Logs →
+   Messaging**. (SID e Auth Token iguais.) Deploy.
 8. **Smoke real:** mensagem pro `5588994963067` de outro celular → bot responde, não cai
    mais. As CTAs `wa.me/558894963067` da landing seguem válidas.
 
@@ -80,10 +84,13 @@ Só depois que a Fase A funcionar.
 |---|---|
 | `TWILIO_ACCOUNT_SID` | Account Info (começa com `AC`) — não é segredo |
 | `TWILIO_AUTH_TOKEN` | Account Info ("show") — **segredo**, só no Dokploy/.env |
-| `TWILIO_WHATSAPP_FROM` | Sandbox: `whatsapp:+14155238886` → Prod: `whatsapp:+5588994963067` |
+| `TWILIO_WHATSAPP_FROM` | Sandbox: `whatsapp:+14155238886` → Prod: `whatsapp:+558894963067` (wa_id, **sem o 9**) |
 
 ## Erros que vão morder
 
+- **Nono dígito no FROM (63007):** o sender é registrado com o 9 (`+5588994963067`),
+  mas o canal responde pelo wa_id **sem** o 9 (`whatsapp:+558894963067`). FROM com o 9 →
+  `63007` em todo envio. Mordeu no cutover da Fase B (2026-06-03).
 - **URL exata:** o bot valida a `X-Twilio-Signature` reconstruindo a URL pública. Tem que
   bater **exatamente**: `https://bot.appslice.com.br/webhooks/whatsapp`, **sem barra no
   fim, sem querystring**. Divergiu → bot responde **403** e a Twilio mostra falha de
@@ -95,6 +102,11 @@ Só depois que a Fase A funcionar.
   conversa exigiria template aprovado (fora de escopo).
 
 ## Rollback
+
+> ⚠️ **OBSOLETO desde a Fase B (2026-06-03).** O `5588994963067` saiu do WhatsApp
+> consumer ao virar sender da API (porta de mão única) — não dá mais pra re-parear
+> via Baileys com esse número. Rollback agora seria só de código (reverter commit),
+> trocando de número, o que não faz sentido. Mantido só como registro histórico.
 
 Como o `docker-compose.yml` não foi tocado, a stack Evolution continua no ar. Reverter =
 voltar a branch (`git revert`/redeploy da versão anterior) e re-parear o Baileys pelo
