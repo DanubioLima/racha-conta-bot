@@ -1,0 +1,40 @@
+# CI do Slice: typecheck + testes + build da imagem Docker.
+#
+# Não há build de transpilação (o bot roda via tsx) — o "build" real do
+# projeto é a imagem Docker que o Dokploy constrói no deploy. Validar o
+# `docker build` aqui pega quebra de Dockerfile/módulo nativo (ex:
+# better-sqlite3 compilando do source em musl) ANTES do merge, já que a
+# main auto-deploya.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    name: typecheck + testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # espelha o node:24-alpine do Dockerfile
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+  docker-build:
+    name: build da imagem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: docker build .
