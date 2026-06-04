@@ -35,6 +35,20 @@ no WhatsApp" — anotar gastos, fiado e rachar conta como features irmãs.
 **Desambiguação racha × gasto (prompt):** citou pessoas/divisão = racha;
 solo = gasto.
 
+### Decisão: classify→dispatch mantido (não tool-calling)
+
+Avaliado em 2026-06-04 (dúvida levantada na revisão do spec): o `@google/genai`
+suporta function calling nativo, mas a v1 **mantém classify→dispatch**:
+1 chamada LLM por mensagem (~810ms), números/voz 100% determinísticos via
+`voice.ts` (LLM formatando resultado financeiro = risco de valor alucinado),
+e o harness de testes atual continua válido. Reafirma a decisão de 2026-05-30
+(Nível 1.5). **Gatilho de revisita:** se o smoke mostrar a acurácia de
+classificação degradando com 9 intents, adotar **function calling como
+transporte da classificação** (modelo escolhe 1 tool, código executa e
+renderiza) — upgrade de encanamento, não de arquitetura. Agente com loop de
+tools só se surgirem interações multi-etapa que o histórico não resolve, e
+com confirmação obrigatória pra ações de escrita.
+
 ## Registro em dois níveis
 
 O contexto do Gemini já distingue `registered` de `hasPix`:
