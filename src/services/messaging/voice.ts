@@ -10,6 +10,8 @@
 // só nos gates de cadastro/PIX, na confirmação pós-cadastro e no fallback de
 // confusão real. Nunca como resposta pra tudo.
 
+import type { ExpenseCategory, ExpensePeriod } from '../expenses/expense.types.js';
+
 export function formatBRL(value: number): string {
   return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
@@ -28,9 +30,9 @@ export interface FallbackContext {
 
 export function fallbackReply(ctx: FallbackContext): string {
   if (!ctx.registered) {
-    return 'Oi! Eu divido contas no PIX 👋 Pra começar, me diz seu nome e chave PIX (ex: "Sou João, pix joao@email.com").';
+    return 'Oi! Eu anoto seus gastos e divido contas no PIX 👋 Pra começar, me diz seu nome e chave PIX (ex: "Sou João, pix joao@email.com").';
   }
-  return 'Não peguei 🤔 Posso dividir uma conta ("paguei 60 na pizza, divide com Ana e Beto") ou marcar quem pagou ("a Ana me pagou").';
+  return 'Não peguei 🤔 Posso anotar um gasto ("gastei 25 no mercado"), dividir uma conta ("paguei 60 na pizza, divide com Ana e Beto") ou marcar quem pagou ("a Ana me pagou").';
 }
 
 export function instability(): string {
@@ -107,6 +109,70 @@ export function billExpired(description: string, pendingNames: string[]): string
   const what = description ? `Conta "${description}"` : 'Conta';
   const tail = pendingNames.length > 0 ? ` Pendentes: ${pendingNames.join(', ')}.` : '';
   return `⏱️ ${what} expirou após 7 dias.${tail}`;
+}
+
+// ---- Gastos ----
+
+// Categorias são armazenadas em inglês (enum em expense.types.ts); o usuário
+// só vê os rótulos em português daqui.
+const EXPENSE_CATEGORY_LABELS: Record<ExpenseCategory, string> = {
+  groceries: 'mercado',
+  food: 'comida',
+  transport: 'transporte',
+  home: 'casa',
+  leisure: 'lazer',
+  health: 'saúde',
+  bills: 'contas',
+  other: 'outros',
+};
+
+// Gasto não gera cobrança — só o nome basta, diferente do askToRegister (conta).
+export function askForNameToTrack(): string {
+  return 'Pra anotar seus gastos eu só preciso do seu nome 🙂 Manda algo tipo "Sou João".';
+}
+
+export function expenseLogged(params: {
+  amount: number;
+  category: ExpenseCategory;
+  todayTotal: number;
+}): string {
+  const label = EXPENSE_CATEGORY_LABELS[params.category];
+  return `Anotado: ${formatBRL(params.amount)} — ${label}. Hoje já foram ${formatBRL(params.todayTotal)}.`;
+}
+
+const PERIOD_HEADERS: Record<ExpensePeriod, string> = {
+  today: 'Gastos de hoje',
+  week: 'Gastos da semana',
+  month: 'Gastos do mês',
+};
+
+const PERIOD_EMPTY_LABELS: Record<ExpensePeriod, string> = {
+  today: 'hoje',
+  week: 'nesta semana',
+  month: 'neste mês',
+};
+
+// Dia/mês no fuso do usuário (BRT), não em UTC.
+function formatDayMonth(isoUtc: string): string {
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+  }).format(new Date(isoUtc));
+}
+
+export function expensesSummary(params: {
+  period: ExpensePeriod;
+  total: number;
+  items: { spentAt: string; description: string; amount: number }[];
+}): string {
+  if (params.items.length === 0) {
+    return `Nenhum gasto anotado ${PERIOD_EMPTY_LABELS[params.period]} 🎉`;
+  }
+  const lines = params.items.map(
+    (item) => `• ${formatDayMonth(item.spentAt)} — ${item.description} — ${formatBRL(item.amount)}`,
+  );
+  return `${PERIOD_HEADERS[params.period]}: ${formatBRL(params.total)}\n${lines.join('\n')}`;
 }
 
 // ---- Listagem de contas em aberto ----

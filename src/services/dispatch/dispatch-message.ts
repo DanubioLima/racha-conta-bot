@@ -1,12 +1,13 @@
 import { extractIntent, GeminiUnavailableError } from "../llm/gemini.js";
 import { createBillFromExtraction, markPaid, listOpenBills, closeBills } from "../bills/bill.service.js";
+import { logExpense, queryExpenses } from "../expenses/expense.service.js";
 import { handleRegistration } from "../users/user.service.js";
-import { userRepository } from "../../repositories/user.repository.js";
+import { userRepository, type User } from "../../repositories/user.repository.js";
 import { unknownIntentsRepository } from "../../repositories/unknown-intents.repository.js";
 import { conversationRepository } from "../../repositories/conversation.repository.js";
 import { sendText } from "../whatsapp/whatsapp.js";
-import { fallbackReply, instability, askToRegister, askForPix } from "../messaging/voice.js";
-import type { ExtractionResult } from "../bills/bill.types.js";
+import { fallbackReply, instability, askToRegister, askForPix, askForNameToTrack } from "../messaging/voice.js";
+import type { ExtractionResult, RegisterProfile } from "../bills/bill.types.js";
 
 export async function dispatchIncomingMessage(senderPhone: string, text: string): Promise<void> {
   const user = await userRepository.findByPhone(senderPhone);
@@ -41,6 +42,16 @@ export async function dispatchIncomingMessage(senderPhone: string, text: string)
       botTurn = message;
     };
 
+    // Gasto só exige NOME (não gera cobrança — sem gate de PIX): registra
+    // on-the-fly se o nome veio na própria mensagem (intent misto), senão
+    // devolve null pro chamador pedir o nome.
+    const ensureNamedUser = async (profile?: RegisterProfile): Promise<User | null> => {
+      if (user) return user;
+      if (!profile?.name) return null;
+      await handleRegistration(senderPhone, profile, { continueToBill: true });
+      return userRepository.findByPhone(senderPhone);
+    };
+
     switch (result.intent) {
       case "register_account":
         if (!result.profile?.name && !result.profile?.pix_key) {
@@ -52,6 +63,18 @@ export async function dispatchIncomingMessage(senderPhone: string, text: string)
 
       case "create_bill": {
         if (!result.bill) { await say(fallbackReply({ registered: !!user })); break; }
+        // Sem ninguém pra rachar = gasto solo (era o bug da conta vazia sem
+        // PIX). Categoria fica 'other': este caminho não extraiu categoria.
+        if (result.bill.participants.length === 0) {
+          const owner = await ensureNamedUser(result.profile);
+          if (!owner) { await say(askForNameToTrack()); break; }
+          botTurn = await logExpense(owner, {
+            amount: result.bill.total_amount,
+            description: result.bill.description,
+            category: "other",
+          });
+          break;
+        }
         // Intent misto: só auto-registra quem está incompleto; conta vence o resto.
         let owner = user;
         if (result.profile && (!owner || !owner.pix_key)) {
@@ -64,6 +87,19 @@ export async function dispatchIncomingMessage(senderPhone: string, text: string)
         botTurn = "[criei a conta]";
         break;
       }
+
+      case "log_expense": {
+        if (!result.expense) { await say(fallbackReply({ registered: !!user })); break; }
+        const owner = await ensureNamedUser(result.profile);
+        if (!owner) { await say(askForNameToTrack()); break; }
+        botTurn = await logExpense(owner, result.expense);
+        break;
+      }
+
+      case "query_expenses":
+        if (!user) { await say(askForNameToTrack()); break; }
+        botTurn = await queryExpenses(senderPhone, result.query ?? {});
+        break;
 
       case "mark_paid":
         if (!user) { await say(askToRegister()); break; }
