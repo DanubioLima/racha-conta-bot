@@ -45,8 +45,9 @@ export function askForName(): string {
   return 'Pra começar preciso do seu nome 🙂 Manda algo tipo "Sou João, pix joao@email.com".';
 }
 
+// Gate comum a racha e fiado: ambos geram cobrança PIX no nome do dono.
 export function askToRegister(): string {
-  return 'Pra dividir essa conta eu preciso te conhecer primeiro 🙂 Me diz seu nome e chave PIX (ex: "Sou João, pix joao@email.com").';
+  return 'Pra gerar a cobrança eu preciso te conhecer primeiro 🙂 Me diz seu nome e chave PIX (ex: "Sou João, pix joao@email.com").';
 }
 
 export function askForPix(name: string): string {
@@ -175,6 +176,25 @@ export function expensesSummary(params: {
   return `${PERIOD_HEADERS[params.period]}: ${formatBRL(params.total)}\n${lines.join('\n')}`;
 }
 
+// ---- Fiado (dívidas: alguém deve ao dono) ----
+
+export function debtRegistered(params: {
+  debtorName: string;
+  amount: number;
+  description: string;
+}): string {
+  const context = params.description ? ` (${params.description})` : '';
+  return (
+    `Anotei: ${params.debtorName} te deve ${formatBRL(params.amount)}${context}. ` +
+    `Te mando o PIX da cobrança 👇`
+  );
+}
+
+export function debtSettled(params: { debtorName: string; description: string }): string {
+  const context = params.description ? ` (${params.description})` : '';
+  return `Boa! ${params.debtorName} quitou a dívida${context} 💸`;
+}
+
 // ---- Listagem de contas em aberto ----
 
 // Resumo compacto das contas ABERTAS do dono (1 linha por conta). Recebe um shape
@@ -198,6 +218,27 @@ export function openBillsList(
     return `• ${label} (${missing})`;
   });
   return `Suas contas em aberto:\n${lines.join('\n')}`;
+}
+
+// Visão geral do list_bills: rachas e dívidas em seções separadas — a voz de
+// "conta rachada" não serve pra fiado ("faltam 2: ..." numa dívida de 1 pessoa).
+export function openOverview(params: {
+  splits: { description: string; total: number; pending: string[] }[];
+  debts: { debtorName: string; amount: number; description: string }[];
+}): string {
+  if (params.splits.length === 0 && params.debts.length === 0) {
+    return 'Você não tem nenhuma conta em aberto 🎉';
+  }
+  const sections: string[] = [];
+  if (params.splits.length > 0) sections.push(openBillsList(params.splits));
+  if (params.debts.length > 0) {
+    const lines = params.debts.map((debt) => {
+      const context = debt.description ? ` (${debt.description})` : '';
+      return `• ${debt.debtorName} — ${formatBRL(debt.amount)}${context}`;
+    });
+    sections.push(`Te devem:\n${lines.join('\n')}`);
+  }
+  return sections.join('\n\n');
 }
 
 // ---- Encerrar / quitar conta inteira ----

@@ -7,7 +7,9 @@ import {
   billCreatedHeadline,
   paymentReceived,
   billClosed,
-  openBillsList,
+  debtRegistered,
+  debtSettled,
+  openOverview,
   noOpenBillsToClose,
   askWhichBill,
   billNotFound,
@@ -22,6 +24,7 @@ import type {
   Bill,
   CloseInput,
   ExtractedBill,
+  ExtractedDebt,
   MarkPaidInput,
   Participant,
 } from "./bill.types.js";
@@ -77,7 +80,14 @@ function renderPaidMessage(bill: Bill, paid: Participant): string {
   });
 }
 
+// Dívida fecha com voz própria: "todo mundo pagou" não faz sentido pra fiado.
 function renderClosedMessage(bill: Bill): string {
+  if (bill.kind === "debt") {
+    return debtSettled({
+      debtorName: bill.participants[0]?.name ?? "",
+      description: bill.description,
+    });
+  }
   return billClosed(bill.description);
 }
 
@@ -98,6 +108,7 @@ export async function createBillFromExtraction(extracted: ExtractedBill, owner: 
   const bill: Bill = {
     id,
     owner_phone: owner.phone,
+    kind: "split",
     description: extracted.description,
     total_amount: Number(extracted.total_amount.toFixed(2)),
     amount_per_person: amountPerPerson,
@@ -116,14 +127,68 @@ export async function createBillFromExtraction(extracted: ExtractedBill, owner: 
   return bill;
 }
 
+// Fiado é uma bill kind='debt' com 1 participante: PIX da cobrança, mark_paid
+// e encerramento funcionam pelo mesmo caminho do racha — só a voz muda.
+export async function createDebtFromExtraction(extracted: ExtractedDebt, owner: User): Promise<Bill> {
+  console.log("[bill] createDebt from extraction", { owner: owner.phone, debtor: extracted.debtor_name });
+  const id = ulid();
+  const amount = Number(extracted.amount.toFixed(2));
+  const description = extracted.description?.trim() ?? "";
+
+  const bill: Bill = {
+    id,
+    owner_phone: owner.phone,
+    kind: "debt",
+    description,
+    total_amount: amount,
+    amount_per_person: amount,
+    status: "OPEN",
+    created_at: new Date().toISOString(),
+    participants: [
+      {
+        name: extracted.debtor_name,
+        amount_due: amount,
+        status: "PENDING",
+        pix_payload: buildPixPayload({
+          amount,
+          txid: `${id.slice(-10)}0`,
+          message: `Cobrança: ${description || extracted.debtor_name}`.slice(0, 60),
+          key: owner.pix_key,
+          merchantName: owner.pix_merchant_name,
+          merchantCity: owner.pix_merchant_city,
+        }),
+      },
+    ],
+  };
+
+  await billRepository.insert(bill);
+  console.log("[bill] debt inserted", { id: bill.id, owner: bill.owner_phone });
+  try {
+    await sendText(owner.phone, debtRegistered({ debtorName: extracted.debtor_name, amount, description }));
+    await sendText(owner.phone, bill.participants[0]!.pix_payload);
+  } catch (sendError) {
+    console.error("[bill] debt messages failed", sendError);
+  }
+  return bill;
+}
+
 export async function listOpenBills(ownerPhone: string): Promise<string> {
   const bills = await billRepository.findOpenForOwner(ownerPhone);
-  const summary = bills.map((bill) => ({
-    description: bill.description,
-    total: bill.total_amount,
-    pending: bill.participants.filter((p) => p.status === "PENDING").map((p) => p.name),
-  }));
-  const message = openBillsList(summary);
+  const splits = bills
+    .filter((bill) => bill.kind === "split")
+    .map((bill) => ({
+      description: bill.description,
+      total: bill.total_amount,
+      pending: bill.participants.filter((p) => p.status === "PENDING").map((p) => p.name),
+    }));
+  const debts = bills
+    .filter((bill) => bill.kind === "debt")
+    .map((bill) => ({
+      debtorName: bill.participants[0]?.name ?? "",
+      amount: bill.total_amount,
+      description: bill.description,
+    }));
+  const message = openOverview({ splits, debts });
   await sendText(ownerPhone, message);
   return message;
 }
@@ -218,6 +283,12 @@ export async function markPaid(ownerPhone: string, input: MarkPaidInput): Promis
       }
       if (b.participants.every((x) => x.status === "PAID")) b.status = "CLOSED";
     });
+    if (target.kind === "debt") {
+      return sendAndReturn(
+        ownerPhone,
+        debtSettled({ debtorName: target.participants[0]?.name ?? "", description: target.description }),
+      );
+    }
     return sendAndReturn(ownerPhone, billPaidWhole(target.description));
   }
 

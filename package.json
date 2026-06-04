@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed:danubio": "tsx src/bin/seed-danubio-user.ts",
+    "metrics": "tsx src/bin/metrics.ts",
     "bench:gemini": "tsx src/bin/bench-gemini.ts"
   },
   "dependencies": {
