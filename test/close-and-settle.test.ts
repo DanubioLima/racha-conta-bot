@@ -5,7 +5,6 @@ const { sentMessages } = vi.hoisted(() => ({ sentMessages: [] as { to: string; t
 vi.mock('../src/services/whatsapp/whatsapp.js', () => ({
   sendText: vi.fn(async (to: string, text: string) => { sentMessages.push({ to, text }); }),
 }));
-vi.mock('../src/workers/payment-scanner.worker.js', () => ({ notifyNewBillCreated: vi.fn() }));
 
 import { closeBills, markPaid } from '../src/services/bills/bill.service.js';
 import { billRepository } from '../src/repositories/bill.repository.js';

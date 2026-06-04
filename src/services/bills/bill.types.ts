@@ -57,10 +57,3 @@ export type ExtractionResult =
   | { intent: 'list_bills' }
   | { intent: 'close_bill'; close: CloseInput }
   | { intent: 'unknown'; reply?: string };
-
-export interface IncomingTransaction {
-  id: string;
-  amount: number;
-  payer_name: string;
-  occurred_at: string;
-}
